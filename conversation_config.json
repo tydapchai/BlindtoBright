@@ -1,0 +1,32 @@
+{
+  "intent_sentences": {
+    "bathroom": {
+      "vi": "Tôi muốn đi vệ sinh.",
+      "en": "I want to go to the bathroom."
+    },
+    "eat": {
+      "vi": "Tôi muốn ăn.",
+      "en": "I want to eat."
+    },
+    "help": {
+      "vi": "Hãy giúp tôi.",
+      "en": "Please help me."
+    },
+    "no": {
+      "vi": "Không.",
+      "en": "No."
+    },
+    "thank you": {
+      "vi": "Cảm ơn bạn.",
+      "en": "Thank you."
+    },
+    "water": {
+      "vi": "Tôi muốn uống nước.",
+      "en": "I want to drink water."
+    },
+    "yes": {
+      "vi": "Vâng.",
+      "en": "Yes."
+    }
+  }
+}
