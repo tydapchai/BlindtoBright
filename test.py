@@ -2,7 +2,7 @@ import cv2
 import requests
 import numpy as np
 
-url = "http://192.168.0.183:81/stream"
+url = "http://192.168.4.1:81/stream"
 
 response = requests.get(
     url,

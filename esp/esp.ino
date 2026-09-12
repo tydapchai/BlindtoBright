@@ -3,16 +3,17 @@
 #include <WiFi.h>
 #include "esp_http_server.h"
 #include "soc/soc.h"
-#include "soc/rtc_cntl_reg.h"
+#include "soc/rtc_cntl_struct.h"
+#include "ESP_I2S.h"
 
 // =====================================================
 // Wi-Fi Configuration
 // =====================================================
-const char* WIFI_SSID = "AABW3";
-const char* WIFI_PASSWORD = "AGENTIC2026";
+const char* WIFI_SSID = "FPTU_Library";
+const char* WIFI_PASSWORD = "12345678";
 
 // =====================================================
-// PIN CAMERA (ESP32-S3-CAM / Freenove / Ai-Thinker)
+// PIN CAMERA (ESP32-S3-CAM / Goouuu)
 // =====================================================
 #define PWDN_GPIO_NUM     -1
 #define RESET_GPIO_NUM    -1
@@ -34,6 +35,16 @@ const char* WIFI_PASSWORD = "AGENTIC2026";
 
 // Đặt -1 nếu không có LED flash hoặc không dùng
 #define LED_GPIO_NUM      -1
+
+// =====================================================
+// PIN MICRO INMP441 (I2S)
+// =====================================================
+#define I2S_SCK_PIN       47
+#define I2S_WS_PIN        48
+#define I2S_SD_PIN         1
+#define SAMPLE_RATE    16000
+
+static I2SClass i2s;
 
 // =====================================================
 // HTTP STREAM SERVER
@@ -96,8 +107,97 @@ static esp_err_t stream_handler(httpd_req_t *req) {
   return res;
 }
 
+static esp_err_t mic_stream_handler(httpd_req_t *req) {
+  httpd_resp_set_type(req, "audio/x-raw");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+  int32_t raw_buf[128];
+  int16_t pcm_buf[128];
+
+  while (true) {
+    size_t bytes_read = i2s.readBytes((char*)raw_buf, sizeof(raw_buf));
+    if (bytes_read > 0) {
+      int count = bytes_read / sizeof(int32_t);
+      for (int i = 0; i < count; i++) {
+        pcm_buf[i] = (int16_t)(raw_buf[i] >> 14);
+      }
+      esp_err_t res = httpd_resp_send_chunk(req, (const char*)pcm_buf, count * sizeof(int16_t));
+      if (res != ESP_OK) {
+        break; // Client ngắt kết nối
+      }
+    } else {
+      vTaskDelay(pdMS_TO_TICKS(5));
+    }
+  }
+  return ESP_OK;
+}
+
+// Thu âm 5 giây và gửi file WAV để nghe trực tiếp trên trình duyệt
+static esp_err_t record_wav_handler(httpd_req_t *req) {
+  const size_t duration_sec = 5;
+  const size_t total_samples = SAMPLE_RATE * duration_sec;
+  const size_t pcm_size = total_samples * sizeof(int16_t);
+  const size_t header_size = 44;
+  const size_t total_file_size = header_size + pcm_size;
+
+  uint8_t* wav_buf = psramFound() ? (uint8_t*)ps_malloc(total_file_size) : (uint8_t*)malloc(total_file_size);
+  if (!wav_buf) {
+    httpd_resp_send_500(req);
+    return ESP_FAIL;
+  }
+
+  // Tạo WAV Header chuẩn 16kHz 16-bit Mono
+  uint32_t sample_rate = SAMPLE_RATE;
+  uint16_t num_channels = 1;
+  uint16_t bits_per_sample = 16;
+  uint32_t byte_rate = sample_rate * num_channels * (bits_per_sample / 8);
+  uint16_t block_align = num_channels * (bits_per_sample / 8);
+  uint32_t subchunk2_size = pcm_size;
+  uint32_t chunk_size = 36 + subchunk2_size;
+
+  memcpy(wav_buf, "RIFF", 4);
+  memcpy(wav_buf + 4, &chunk_size, 4);
+  memcpy(wav_buf + 8, "WAVE", 4);
+  memcpy(wav_buf + 12, "fmt ", 4);
+  uint32_t subchunk1_size = 16;
+  memcpy(wav_buf + 16, &subchunk1_size, 4);
+  uint16_t audio_format = 1; // PCM
+  memcpy(wav_buf + 20, &audio_format, 2);
+  memcpy(wav_buf + 22, &num_channels, 2);
+  memcpy(wav_buf + 24, &sample_rate, 4);
+  memcpy(wav_buf + 28, &byte_rate, 4);
+  memcpy(wav_buf + 32, &block_align, 2);
+  memcpy(wav_buf + 34, &bits_per_sample, 2);
+  memcpy(wav_buf + 36, "data", 4);
+  memcpy(wav_buf + 40, &subchunk2_size, 4);
+
+  // Thu 5 giây dữ liệu từ INMP441
+  int16_t* pcm_dest = (int16_t*)(wav_buf + header_size);
+  int32_t raw_temp[128];
+  size_t samples_recorded = 0;
+
+  while (samples_recorded < total_samples) {
+    size_t to_read = min((size_t)128, total_samples - samples_recorded);
+    size_t bytes_read = i2s.readBytes((char*)raw_temp, to_read * sizeof(int32_t));
+    if (bytes_read > 0) {
+      size_t count = bytes_read / sizeof(int32_t);
+      for (size_t i = 0; i < count; i++) {
+        pcm_dest[samples_recorded++] = (int16_t)(raw_temp[i] >> 14);
+      }
+    }
+  }
+
+  httpd_resp_set_type(req, "audio/wav");
+  httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+  httpd_resp_set_hdr(req, "Content-Disposition", "inline; filename=\"record_5s.wav\"");
+  esp_err_t res = httpd_resp_send(req, (const char*)wav_buf, total_file_size);
+
+  free(wav_buf);
+  return res;
+}
+
 static esp_err_t index_handler(httpd_req_t *req) {
-  const char* html = "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>ESP32-S3 CAM</title></head><body style=\"text-align:center;background:#181818;color:#eee;font-family:sans-serif;\"><h2>ESP32-S3 Stream</h2><img src=\"/stream\" style=\"max-width:100%;height:auto;border-radius:8px;\"></body></html>";
+  const char* html = "<!DOCTYPE html><html><head><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\"><title>ESP32-S3 Camera & Mic</title><style>body{text-align:center;background:#181818;color:#eee;font-family:sans-serif;padding:20px;}img{max-width:100%;height:auto;border-radius:10px;box-shadow:0 4px 12px rgba(0,0,0,0.5);}.btn{display:inline-block;margin:15px;padding:12px 24px;background:#007bff;color:#fff;text-decoration:none;border-radius:6px;font-weight:bold;}.btn:hover{background:#0056b3;}</style></head><body><h2>ESP32-S3 Camera & Audio</h2><img src=\"/stream\"><br><a class=\"btn\" href=\"/record.wav\" target=\"_blank\">🎙️ Bấm để Thu Âm & Nghe Thử Mic 5 Giây</a></body></html>";
   httpd_resp_set_type(req, "text/html");
   return httpd_resp_send(req, html, HTTPD_RESP_USE_STRLEN);
 }
@@ -128,10 +228,26 @@ void startCameraServer() {
     .user_ctx  = NULL
   };
 
+  httpd_uri_t mic_uri = {
+    .uri       = "/mic",
+    .method    = HTTP_GET,
+    .handler   = mic_stream_handler,
+    .user_ctx  = NULL
+  };
+
+  httpd_uri_t record_wav_uri = {
+    .uri       = "/record.wav",
+    .method    = HTTP_GET,
+    .handler   = record_wav_handler,
+    .user_ctx  = NULL
+  };
+
   // Khởi động server xem trực tiếp trên port 80
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(camera_httpd, &index_uri);
     httpd_register_uri_handler(camera_httpd, &stream_uri);
+    httpd_register_uri_handler(camera_httpd, &mic_uri);
+    httpd_register_uri_handler(camera_httpd, &record_wav_uri);
   }
 
   // Khởi động stream server chuyên dụng trên port 81 (khớp với test.py và app.py)
@@ -146,11 +262,18 @@ void startCameraServer() {
 // SETUP
 // =====================================================
 void setup() {
-  // 1. TẮT BROWNOUT DETECTOR NGAY TỪ ĐẦU ĐỂ TRÁNH RESET SỤT ÁP CỔNG USB
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  // 1. TẮT TRIỆT ĐỂ BROWNOUT DETECTOR TRÊN ESP32-S3 (Tránh reset sụt áp cổng USB)
+  RTCCNTL.brown_out.ena = 0;
+  RTCCNTL.brown_out.rst_ena = 0;
   delay(100);
 
   Serial.begin(115200);
+  Serial.setDebugOutput(true);
+  delay(500);
+
+  // 2. Khởi tạo Micro I2S INMP441
+  i2s.setPins(I2S_SCK_PIN, I2S_WS_PIN, -1, I2S_SD_PIN);
+  i2s.begin(I2S_MODE_STD, SAMPLE_RATE, I2S_DATA_BIT_WIDTH_32BIT, I2S_SLOT_MODE_MONO, I2S_STD_SLOT_LEFT);
   Serial.setDebugOutput(true);
   delay(500);
 
