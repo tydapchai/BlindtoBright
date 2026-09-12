@@ -2,6 +2,8 @@
 #include "esp_camera.h"
 #include <WiFi.h>
 #include "esp_http_server.h"
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 
 // =====================================================
 // Wi-Fi Configuration
@@ -144,9 +146,13 @@ void startCameraServer() {
 // SETUP
 // =====================================================
 void setup() {
+  // 1. TẮT BROWNOUT DETECTOR NGAY TỪ ĐẦU ĐỂ TRÁNH RESET SỤT ÁP CỔNG USB
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  delay(100);
+
   Serial.begin(115200);
   Serial.setDebugOutput(true);
-  delay(1000);
+  delay(500);
 
   Serial.println();
   Serial.println("Starting ESP32-S3 camera...");
@@ -215,11 +221,7 @@ void setup() {
     // sensor->set_hmirror(sensor, 1);
   }
 
-#include "soc/soc.h"
-#include "soc/rtc_cntl_reg.h"
-
-  // Vô hiệu hóa brownout detector để tránh sụt áp cổng USB gây reset
-  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0);
+  delay(500); // Tạm dừng 500ms để điện áp ổn định sau khi camera bật
 
 #if LED_GPIO_NUM >= 0
   setupLedFlash(LED_GPIO_NUM);
@@ -227,7 +229,7 @@ void setup() {
 
   WiFi.mode(WIFI_STA);
   WiFi.setSleep(false);
-  WiFi.setTxPower(WIFI_POWER_15dBm); // Giảm bớt công suất phát để không bị sụt dòng USB
+  WiFi.setTxPower(WIFI_POWER_11dBm); // Hạ bớt công suất phát để bảo vệ nguồn USB
 
   Serial.printf("\n[-] Dang ket noi vao Wi-Fi '%s' (bang tan 2.4GHz)...\n", WIFI_SSID);
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
