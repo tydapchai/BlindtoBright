@@ -12,6 +12,17 @@ from collections import deque
 from pathlib import Path
 import tempfile
 
+# Bypass any system / environment proxies for direct local LAN communication
+os.environ["NO_PROXY"] = "*"
+os.environ["no_proxy"] = "*"
+for _k in ["HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy", "ALL_PROXY", "all_proxy"]:
+    os.environ.pop(_k, None)
+
+import requests
+http_session = requests.Session()
+http_session.trust_env = False
+http_session.proxies = {"http": None, "https": None}
+
 os.environ.setdefault(
     "OPENCV_FFMPEG_CAPTURE_OPTIONS",
     "fflags;nobuffer|flags;low_delay|analyzeduration;0|probesize;32"
@@ -26,6 +37,58 @@ from faster_whisper import WhisperModel
 import mediapipe as mp
 from mediapipe.tasks import python
 from mediapipe.tasks.python import vision
+from PIL import Image, ImageDraw, ImageFont
+
+try:
+    vn_font_large = ImageFont.truetype("arial.ttf", 20)
+    vn_font_title = ImageFont.truetype("arial.ttf", 14)
+except Exception:
+    try:
+        vn_font_large = ImageFont.truetype("segoeui.ttf", 20)
+        vn_font_title = ImageFont.truetype("segoeui.ttf", 14)
+    except Exception:
+        vn_font_large = ImageFont.load_default()
+        vn_font_title = vn_font_large
+
+def draw_vn_banner(frame, title: str, text: str, font_title=vn_font_title, font_body=vn_font_large):
+    h, w = frame.shape[:2]
+    box_h = 76
+    box_y = max(0, h - box_h - 10)
+    box_x1 = 15
+    box_x2 = w - 15
+
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (box_x1, box_y), (box_x2, h - 10), (15, 15, 15), -1)
+    cv2.rectangle(overlay, (box_x1, box_y), (box_x2, h - 10), (0, 215, 255), 2)
+    cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+
+    box_crop = frame[box_y:h-10, box_x1:box_x2]
+    crop_rgb = cv2.cvtColor(box_crop, cv2.COLOR_BGR2RGB)
+    pil_img = Image.fromarray(crop_rgb)
+    draw = ImageDraw.Draw(pil_img)
+
+    if len(text) > 38:
+        words = text.split()
+        line1, line2 = [], []
+        curr = line1
+        for w_word in words:
+            if curr is line1 and len(" ".join(line1 + [w_word])) > 38:
+                curr = line2
+            curr.append(w_word)
+        l1_str = " ".join(line1)
+        l2_str = " ".join(line2)
+        if len(l2_str) > 42:
+            l2_str = l2_str[:39] + "..."
+        draw.text((12, 4), title, font=font_title, fill=(0, 240, 255))
+        draw.text((12, 26), l1_str, font=font_body, fill=(255, 255, 255))
+        draw.text((12, 48), l2_str, font=font_body, fill=(255, 255, 255))
+    else:
+        draw.text((12, 6), title, font=font_title, fill=(0, 240, 255))
+        draw.text((12, 32), text, font=font_body, fill=(255, 255, 255))
+
+    res_bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    frame[box_y:h-10, box_x1:box_x2] = res_bgr
+    return frame
 
 HAND_FEATURES = 63
 RAW_FEATURES = 126
@@ -51,40 +114,54 @@ HTML = """
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Communication Assistant</title>
+<title>Blind to Bright - Trợ lý Giao tiếp</title>
 <style>
-body{font-family:Arial,sans-serif;max-width:800px;margin:auto;padding:18px;background:#111;color:#eee}
-.card{background:#1d1d1d;padding:16px;border-radius:14px;margin-bottom:14px}
-button{padding:12px 16px;border:0;border-radius:10px;margin:4px;font-size:16px}
-textarea{width:100%;min-height:100px;border-radius:10px;padding:10px}
-.item{padding:10px;border-bottom:1px solid #444}
-small{color:#aaa}
+body{font-family:'Segoe UI',Roboto,sans-serif;max-width:800px;margin:auto;padding:18px;background:#121212;color:#f0f0f0}
+h1{color:#4da6ff;text-align:center;margin-bottom:20px}
+.card{background:#1e1e1e;padding:18px;border-radius:12px;margin-bottom:16px;box-shadow:0 4px 10px rgba(0,0,0,0.3)}
+button{background:#007bff;color:#fff;padding:10px 18px;border:0;border-radius:8px;margin:4px;font-size:15px;cursor:pointer;font-weight:600}
+button:hover{background:#0056b3}
+textarea{width:100%;min-height:80px;border-radius:8px;padding:10px;background:#2a2a2a;color:#fff;border:1px solid #444;box-sizing:border-box}
+.item{padding:12px;border-bottom:1px solid #333;display:flex;justify-content:space-between;align-items:center}
+.item-text{font-size:16px}
+.tag-gesture{background:#9c27b0;color:#fff;padding:4px 8px;border-radius:6px;font-size:13px;font-weight:bold;margin-right:8px}
+.tag-speech{background:#00897b;color:#fff;padding:4px 8px;border-radius:6px;font-size:13px;font-weight:bold;margin-right:8px}
+small{color:#888;font-size:12px}
 </style>
 </head>
 <body>
-<h1>Communication Assistant</h1>
+<h1>🌟 Blind to Bright - Trợ lý Giao tiếp</h1>
 <div class="card">
-<h2>Ghi âm câu nói</h2>
+<h2>🎙️ Ghi âm & Nhận dạng giọng nói</h2>
 <input id="audio" type="file" accept="audio/*" capture>
 <button onclick="uploadAudio()">Chuyển thành chữ</button>
-<p id="status"></p>
+<p id="status" style="color:#00e676;font-weight:bold"></p>
 </div>
 <div class="card">
-<h2>Tóm tắt</h2>
+<h2>📝 Tóm tắt hội thoại</h2>
 <button onclick="loadSummary()">Tạo tóm tắt</button>
-<textarea id="summary"></textarea>
+<textarea id="summary" readonly></textarea>
 </div>
 <div class="card">
-<h2>Lịch sử hội thoại</h2>
+<h2>💬 Nhật ký hội thoại (Thời gian thực)</h2>
 <div id="history"></div>
 </div>
 <script>
 async function refresh(){
-  const r=await fetch('/api/history');
-  const data=await r.json();
-  document.getElementById('history').innerHTML=data.map(x=>
-    `<div class="item"><b>${x.source}</b>: ${x.text}<br><small>${x.time}</small></div>`
-  ).join('');
+  try{
+    const r=await fetch('/api/history');
+    const data=await r.json();
+    document.getElementById('history').innerHTML=data.slice().reverse().map(x=>{
+      const isGesture = x.source === 'gesture';
+      const badge = isGesture 
+        ? '<span class="tag-gesture">🤟 KÝ HIỆU</span>' 
+        : '<span class="tag-speech">🎙️ GIỌNG NÓI</span>';
+      return `<div class="item">
+        <div class="item-text">${badge} <b>${x.text}</b></div>
+        <small>${x.time || ''}</small>
+      </div>`;
+    }).join('');
+  }catch(e){}
 }
 async function uploadAudio(){
   const f=document.getElementById('audio').files[0];
@@ -101,7 +178,7 @@ async function loadSummary(){
   const data=await r.json();
   document.getElementById('summary').value=data.summary;
 }
-refresh(); setInterval(refresh,3000);
+refresh(); setInterval(refresh,2000);
 </script>
 </body>
 </html>
@@ -340,9 +417,8 @@ def prepare(sequence,length,mean,std):
     sequence=np.concatenate([sequence,velocity],axis=1)
     return ((sequence-mean)/std).astype(np.float32)
 
-def convert_wav_to_32bit_stereo(wav_path):
+def convert_wav_to_16bit_stereo(wav_path):
     import wave
-    import struct
     import os
 
     if not os.path.exists(wav_path):
@@ -359,59 +435,43 @@ def convert_wav_to_32bit_stereo(wav_path):
         if not frames:
             return None
 
-        # Unpack samples to signed 16-bit
-        samples = []
+        # Chuyển đổi dữ liệu mẫu sang mảng numpy float32
         if sampwidth == 2:
-            fmt = f"<{len(frames)//2}h"
-            samples = list(struct.unpack(fmt, frames))
+            data = np.frombuffer(frames, dtype=np.int16).astype(np.float32)
         elif sampwidth == 1:
-            samples = [int(b - 128) * 256 for b in frames]
+            data = (np.frombuffer(frames, dtype=np.uint8).astype(np.float32) - 128.0) * 256.0
         else:
             return None
 
-        # Convert stereo to mono
+        # Gộp thành mono nếu đầu vào là stereo
         if nchannels == 2:
-            samples = [(samples[i] + samples[i+1]) // 2 for i in range(0, len(samples), 2)]
+            data = data.reshape(-1, 2).mean(axis=1)
 
-        # Resample to 16000Hz using linear interpolation
+        # Resample sang 16000Hz nếu cần
         target_rate = 16000
-        if framerate != target_rate:
-            duration = len(samples) / framerate
-            num_target_samples = int(duration * target_rate)
-            resampled = []
-            for i in range(num_target_samples):
-                pos = i * (len(samples) - 1) / (num_target_samples - 1) if num_target_samples > 1 else 0
-                idx = int(pos)
-                frac = pos - idx
-                if idx + 1 < len(samples):
-                    val = int((1 - frac) * samples[idx] + frac * samples[idx+1])
-                else:
-                    val = samples[idx]
-                resampled.append(val)
-            samples = resampled
+        if framerate != target_rate and len(data) > 1:
+            duration = len(data) / framerate
+            target_samples = int(duration * target_rate)
+            orig_indices = np.linspace(0, len(data) - 1, len(data))
+            new_indices = np.linspace(0, len(data) - 1, target_samples)
+            data = np.interp(new_indices, orig_indices, data)
 
-        # Convert to 32-bit stereo PCM bytes
-        # Multiply by a volume factor to prevent clipping on the MAX98357
-        volume = 0.5
-        out_bytes = bytearray()
-        for s in samples:
-            s_val = int(s * volume)
-            s_32 = s_val << 16
-            out_bytes.extend(struct.pack("<ii", s_32, s_32))
-
-        return bytes(out_bytes)
+        # Cân bằng âm lượng 85% để tránh méo tiếng khi khuếch đại qua MAX98357A
+        data = np.clip(data * 0.85, -32768, 32767).astype(np.int16)
+        # Nhân đôi kênh thành Stereo (L + R) cho MAX98357A I2S
+        stereo_data = np.column_stack((data, data)).flatten()
+        return stereo_data.tobytes()
     except Exception as e:
-        logger.warning("Error converting WAV to 32-bit stereo PCM: %s", e)
+        logger.warning("Error converting WAV to 16-bit stereo PCM: %s", e)
         return None
 
 
-def start_tts_worker(camera_source):
+def start_tts_worker(camera_source, language="vi", esp_ip=None):
     items = queue.Queue()
 
-    # Parse ESP32 IP from camera_source if it's a URL
-    from urllib.parse import urlparse
-    esp_ip = None
-    if isinstance(camera_source, str) and camera_source.startswith("http"):
+    # Parse ESP32 IP from camera_source if not provided directly
+    if not esp_ip and isinstance(camera_source, str) and camera_source.startswith("http"):
+        from urllib.parse import urlparse
         try:
             parsed = urlparse(camera_source)
             esp_ip = parsed.hostname
@@ -419,7 +479,7 @@ def start_tts_worker(camera_source):
             pass
 
     def worker():
-        logger.info("TTS worker starting")
+        logger.info("TTS worker starting (target: ESP32 External Speaker ONLY, esp_ip: %s)", esp_ip)
 
         try:
             import pyttsx3
@@ -427,23 +487,20 @@ def start_tts_worker(camera_source):
             import os
 
             engine = pyttsx3.init(driverName="sapi5")
-            engine.setProperty("rate", 155)
+            engine.setProperty("rate", 160)
             engine.setProperty("volume", 1.0)
 
+            # Configure Vietnamese voice if language is 'vi'
+            if language == "vi":
+                vn_voice_id = r"HKEY_LOCAL_MACHINE\SOFTWARE\Microsoft\Speech_OneCore\Voices\Tokens\MSTTS_V110_viVN_An"
+                try:
+                    engine.setProperty("voice", vn_voice_id)
+                    logger.info("Configured Vietnamese TTS voice: Microsoft An (OneCore)")
+                except Exception as e:
+                    logger.warning("Could not set OneCore Vietnamese voice: %s", e)
+
             voices = engine.getProperty("voices")
-
-            logger.info(
-                "TTS initialized with %d voices",
-                len(voices),
-            )
-
-            for index, voice in enumerate(voices):
-                logger.info(
-                    "TTS voice %d: %s | %s",
-                    index,
-                    getattr(voice, "name", "unknown"),
-                    getattr(voice, "id", "unknown"),
-                )
+            logger.info("TTS initialized with %d voices", len(voices))
 
         except Exception:
             logger.exception("TTS initialization failed")
@@ -457,9 +514,9 @@ def start_tts_worker(camera_source):
                     logger.info("TTS worker stopping")
                     return
 
-                logger.info("TTS speaking: %s", text)
+                logger.info("TTS generating speech for ESP32 speaker: %s", text)
 
-                # 1. Save to temp WAV file
+                # 1. Synthesize to temp WAV file
                 temp_wav = "temp_tts.wav"
                 try:
                     if os.path.exists(temp_wav):
@@ -470,52 +527,37 @@ def start_tts_worker(camera_source):
                 engine.save_to_file(str(text), temp_wav)
                 engine.runAndWait()
 
-                # 2. Convert to I2S 32-bit stereo format
-                pcm_data = convert_wav_to_32bit_stereo(temp_wav)
+                # 2. Convert to 16-bit stereo PCM
+                pcm_data = convert_wav_to_16bit_stereo(temp_wav)
 
-                # Clean up immediately
                 try:
                     if os.path.exists(temp_wav):
                         os.remove(temp_wav)
                 except Exception:
                     pass
 
-                # 3. Try playing on ESP32 I2S speaker
-                played_on_esp = False
+                # 3. Stream to ESP32 MAX98357A Speaker via HTTP POST /play
                 if esp_ip and pcm_data:
                     play_url = f"http://{esp_ip}/play"
-                    logger.info(
-                        "Sending PCM data (%d bytes) to ESP32: %s",
-                        len(pcm_data),
-                        play_url,
-                    )
+                    logger.info("Sending audio (%d bytes) to ESP32 speaker: %s", len(pcm_data), play_url)
                     try:
-                        resp = requests.post(play_url, data=pcm_data, timeout=5.0)
+                        resp = http_session.post(
+                            play_url,
+                            data=pcm_data,
+                            headers={"Content-Type": "application/octet-stream"},
+                            timeout=8.0
+                        )
                         if resp.status_code == 200:
-                            logger.info("ESP32 speaker played audio successfully")
-                            played_on_esp = True
+                            logger.info("ESP32 external speaker playback successful!")
                         else:
-                            logger.warning(
-                                "ESP32 speaker failed with code %d",
-                                resp.status_code,
-                            )
+                            logger.warning("ESP32 speaker returned status %d", resp.status_code)
                     except Exception as e:
-                        logger.warning("Failed to send audio to ESP32: %s", e)
-
-                # 4. Fallback to local playback if not played on ESP32
-                if not played_on_esp:
-                    logger.info("Playing audio locally on laptop speaker")
-                    engine.stop()
-                    engine.say(str(text))
-                    engine.runAndWait()
-
-                logger.info("TTS finished: %s", text)
+                        logger.warning("Failed to send audio to ESP32 speaker: %s", e)
+                else:
+                    logger.warning("Cannot play on ESP32 speaker (esp_ip=%s, data_len=%d)", esp_ip, len(pcm_data) if pcm_data else 0)
 
             except Exception:
-                logger.exception(
-                    "TTS failed while speaking: %s",
-                    text,
-                )
+                logger.exception("TTS playback failed: %s", text)
 
             finally:
                 items.task_done()
@@ -576,12 +618,11 @@ class MicrophoneRecorder:
         self._frames.append(indata.copy())
 
     def _record_esp32(self):
-        import requests
-        url = f"http://{self._esp_ip}/mic"
+        url = f"http://{self._esp_ip}:82/mic"
         logger.info("Connecting to ESP32 microphone stream: %s", url)
         try:
             # Use stream=True to read chunks as they arrive
-            resp = requests.get(url, stream=True, timeout=5.0)
+            resp = http_session.get(url, stream=True, timeout=5.0)
             if resp.status_code != 200:
                 logger.error("ESP32 microphone stream returned status %d", resp.status_code)
                 return
@@ -700,6 +741,47 @@ class LatestFrameCamera:
 
     def _capture_loop(self):
         delay = self.reconnect_initial
+        is_http = isinstance(self.source, str) and self.source.startswith("http")
+
+        if is_http:
+            while not self._local_stop.is_set() and not shutdown_event.is_set():
+                logger.info("Connecting to HTTP camera stream: %s", self.source)
+                try:
+                    resp = http_session.get(self.source, stream=True, timeout=5.0)
+                    if resp.status_code == 200:
+                        self._connected.set()
+                        logger.info("HTTP camera stream connected successfully!")
+                        bytes_data = b""
+                        for chunk in resp.iter_content(chunk_size=4096):
+                            if self._local_stop.is_set() or shutdown_event.is_set():
+                                break
+                            if not chunk:
+                                continue
+                            bytes_data += chunk
+                            a = bytes_data.find(b"\xff\xd8")
+                            b = bytes_data.find(b"\xff\xd9", a + 2) if a != -1 else -1
+                            if a != -1 and b != -1:
+                                jpg = bytes_data[a:b+2]
+                                bytes_data = bytes_data[b+2:]
+                                if len(jpg) > 100:
+                                    frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+                                    if frame is not None:
+                                        with self._lock:
+                                            self._frame = frame
+                                            self._frame_id += 1
+                                            self._last_frame_at = time.monotonic()
+                        resp.close()
+                    else:
+                        logger.warning("HTTP camera stream returned status %d", resp.status_code)
+                except Exception as e:
+                    logger.warning("HTTP camera stream error: %s", e)
+
+                self._connected.clear()
+                self._local_stop.wait(delay)
+                delay = min(delay * 2, self.reconnect_max)
+
+            self._connected.clear()
+            return
 
         while not self._local_stop.is_set() and not shutdown_event.is_set():
             if self._capture is None:
@@ -821,18 +903,19 @@ def run_camera(args):
     camera=LatestFrameCamera(source)
     camera.wait_until_connected(args.camera_connect_timeout)
 
-    tts = start_tts_worker(args.camera)
-    time.sleep(1)
-    tts.put("Text to speech is ready")
-
-    # Parse ESP32 IP for OLED and Microphone stream
-    esp_ip = None
-    if isinstance(args.camera, str) and args.camera.startswith("http"):
+    # Parse ESP32 IP for OLED, Speaker and Microphone stream
+    esp_ip = getattr(args, "esp_ip", None)
+    if not esp_ip and isinstance(args.camera, str) and args.camera.startswith("http"):
         from urllib.parse import urlparse as _urlparse
         try:
             esp_ip = _urlparse(args.camera).hostname
         except Exception:
             pass
+
+    tts = start_tts_worker(args.camera, language=args.language, esp_ip=esp_ip)
+    time.sleep(0.3)
+    ready_msg = "Hệ thống Blind to Bright đã sẵn sàng" if args.language == "vi" else "Blind to Bright is ready"
+    tts.put(ready_msg)
 
     # Microphone recorder for speech input
     mic_device = None
@@ -842,20 +925,47 @@ def run_camera(args):
         except ValueError:
             mic_device = args.audio_device
 
-    # Helper to send text to ESP32 OLED
+    def remove_accents(s: str) -> str:
+        import unicodedata
+        s = unicodedata.normalize("NFD", str(s))
+        s = "".join(c for c in s if unicodedata.category(c) != "Mn")
+        return s.replace("đ", "d").replace("Đ", "D")
+
+    # Non-blocking background worker for OLED messages
+    oled_queue = queue.Queue(maxsize=10)
+
+    def oled_worker():
+        while not shutdown_event.is_set():
+            try:
+                msg = oled_queue.get(timeout=0.2)
+            except queue.Empty:
+                continue
+            if esp_ip:
+                try:
+                    clean_text = remove_accents(msg).upper()
+                    http_session.post(
+                        f"http://{esp_ip}/oled",
+                        data=clean_text.encode("utf-8"),
+                        timeout=1.5,
+                    )
+                    logger.info("Sent to OLED: %s", clean_text)
+                except Exception as e:
+                    logger.warning("Failed to send to OLED: %s", e)
+            oled_queue.task_done()
+
+    oled_thread = threading.Thread(target=oled_worker, name="oled-worker", daemon=True)
+    oled_thread.start()
+
     def send_to_oled(text: str):
         if esp_ip is None:
             return
         try:
-            import requests as _req
-            _req.post(
-                f"http://{esp_ip}/oled",
-                data=text.encode("utf-8"),
-                timeout=2.0,
-            )
-            logger.info("Sent to OLED: %s", text)
-        except Exception as e:
-            logger.warning("Failed to send to OLED: %s", e)
+            oled_queue.put_nowait(text)
+        except queue.Full:
+            pass
+
+    # Gửi thông báo sẵn sàng lên OLED ngay khi khởi động
+    send_to_oled("BLIND TO BRIGHT: SAN SANG")
 
     # Queues for pipeline
     audio_raw_queue = queue.Queue()
@@ -870,6 +980,8 @@ def run_camera(args):
     current_partial_text = ""
     transcript_display_until = 0.0
 
+    mic_volume_level = 0.0
+    mic_source_str = "Connecting..."
     speech_active = False
     session_active = False
     segment_active = False
@@ -889,31 +1001,105 @@ def run_camera(args):
         segment_started_at = None
         last_hand_at = None
 
+    def predict_segment():
+        nonlocal label, confidence
+        if len(sequence) < min_frames or detected < min_frames:
+            logger.info(
+                "Segment ignored: %d frames, %d detected (< %d required)",
+                len(sequence),
+                detected,
+                min_frames,
+            )
+            return
+
+        try:
+            features = prepare(sequence, length, mean, std)
+            tensor = torch.from_numpy(features).unsqueeze(0)
+
+            with torch.no_grad():
+                logits = model(tensor)
+                probs = torch.softmax(logits, dim=1).squeeze(0).numpy()
+
+            best_idx = int(np.argmax(probs))
+            best_conf = float(probs[best_idx])
+            predicted_class = str(classes[best_idx])
+
+            logger.info(
+                "Inference result: %s (%.1f%%, threshold: %.1f%%)",
+                predicted_class,
+                best_conf * 100,
+                threshold * 100,
+            )
+
+            if best_conf >= threshold:
+                sentence = sentence_map.get(predicted_class, {}).get(
+                    args.language, predicted_class
+                )
+                label = f"{predicted_class.upper()}"
+                confidence = best_conf
+
+                logger.info(
+                    "Gesture matched: %s -> '%s' (%.1f%%)",
+                    predicted_class,
+                    sentence,
+                    best_conf * 100,
+                )
+
+                # 1. Add to conversation history (displays on Web UI)
+                state.add(
+                    "gesture",
+                    sentence,
+                    {"intent": predicted_class, "confidence": f"{best_conf:.1%}"}
+                )
+
+                # 2. Speak out loud through laptop speaker
+                tts.put(sentence)
+
+                # 3. Send to ESP32 OLED if available
+                send_to_oled(f"SIGN: {sentence}")
+            else:
+                logger.info(
+                    "Confidence %.1f%% below threshold %.1f%%, ignoring",
+                    best_conf * 100,
+                    threshold * 100,
+                )
+                label = f"UNCERTAIN ({best_conf:.0%})"
+                confidence = best_conf
+
+        except Exception as e:
+            logger.exception("Error predicting gesture segment: %s", e)
+
     # Audio Thread
     def audio_thread_func():
+        nonlocal mic_volume_level, mic_source_str
         esp_failed_last = False
         last_esp_retry = 0.0
 
         while not shutdown_event.is_set():
             if esp_ip and not esp_failed_last:
-                import requests
-                url = f"http://{esp_ip}/mic"
+                url = f"http://{esp_ip}:82/mic"
                 logger.info("Audio Thread: Connecting to ESP32 mic stream: %s", url)
                 try:
-                    resp = requests.get(url, stream=True, timeout=5.0)
+                    resp = http_session.get(url, stream=True, timeout=5.0)
                     if resp.status_code == 200:
-                        logger.info("Audio Thread: Connected to ESP32 mic stream")
-                        sample_buf = []
-                        for chunk in resp.iter_content(chunk_size=512):
+                        logger.info("Audio Thread: Connected to ESP32 mic stream (Port 82)")
+                        mic_source_str = "ESP32 (INMP441)"
+                        raw_buf = bytearray()
+                        for chunk in resp.iter_content(chunk_size=1024):
                             if shutdown_event.is_set():
                                 break
                             if chunk:
-                                arr = np.frombuffer(chunk, dtype=np.int16).astype(np.float32) / 32768.0
-                                sample_buf.extend(arr)
-                                while len(sample_buf) >= 512:
-                                    chunk512 = np.array(sample_buf[:512], dtype=np.float32)
-                                    audio_raw_queue.put(chunk512)
-                                    sample_buf = sample_buf[512:]
+                                raw_buf.extend(chunk)
+                                while len(raw_buf) >= 1024:
+                                    chunk_bytes = bytes(raw_buf[:1024])
+                                    del raw_buf[:1024]
+                                    raw_int16 = np.frombuffer(chunk_bytes, dtype=np.int16)
+                                    samples = raw_int16.astype(np.float32) / 32768.0
+                                    # Digital gain 4.0x for INMP441 sensitivity
+                                    samples = np.clip(samples * 4.0, -1.0, 1.0)
+                                    peak = float(np.max(np.abs(samples)))
+                                    mic_volume_level = 0.7 * mic_volume_level + 0.3 * peak
+                                    audio_raw_queue.put(samples)
                         resp.close()
                         continue
                     else:
@@ -926,12 +1112,17 @@ def run_camera(args):
                     last_esp_retry = time.monotonic()
 
             logger.info("Audio Thread: Starting local mic capture (sounddevice)")
+            mic_source_str = "Laptop Mic"
             import sounddevice as sd
             
             def sd_callback(indata, frames, time_info, status):
+                nonlocal mic_volume_level
                 if status:
                     logger.warning("Local mic status: %s", status)
-                audio_raw_queue.put(indata.flatten().copy())
+                data = indata.flatten().copy()
+                peak = float(np.max(np.abs(data)))
+                mic_volume_level = 0.7 * mic_volume_level + 0.3 * peak
+                audio_raw_queue.put(data)
 
             try:
                 stream = sd.InputStream(
@@ -948,8 +1139,7 @@ def run_camera(args):
                             if time.monotonic() - last_esp_retry > 8.0:
                                 logger.info("Audio Thread: Retrying ESP32 mic...")
                                 try:
-                                    import requests as _r
-                                    test_resp = _r.get(f"http://{esp_ip}/mic", stream=True, timeout=2.0)
+                                    test_resp = http_session.get(f"http://{esp_ip}:82/mic", stream=True, timeout=2.0)
                                     if test_resp.status_code == 200:
                                         test_resp.close()
                                         logger.info("Audio Thread: ESP32 mic back online, switching...")
@@ -972,11 +1162,11 @@ def run_camera(args):
         
         speech_buffer = []
         silence_frames = 0
-        max_silence_frames = 25 # 25 * 32ms = 800ms
-        speech_threshold = 0.5
+        max_silence_frames = 20  # 20 * 32ms = 640ms silence to conclude speech
+        speech_threshold = 0.32  # Optimal sensitivity with 4x gain
         
         frames_since_partial = 0
-        partial_interval_frames = 12 
+        partial_interval_frames = 25  # ~800ms
         
         while not shutdown_event.is_set():
             try:
@@ -996,13 +1186,14 @@ def run_camera(args):
                     speech_buffer = []
                     silence_frames = 0
                     frames_since_partial = 0
-                    logger.info("VAD: Speech started")
+                    logger.info("VAD: Speech started (prob=%.2f)", prob)
                     
                 speech_buffer.append(chunk)
                 silence_frames = 0
                 frames_since_partial += 1
                 
-                if frames_since_partial >= partial_interval_frames:
+                # Throttle partials: only enqueue when Whisper has finished previous task
+                if frames_since_partial >= partial_interval_frames and whisper_task_queue.empty():
                     frames_since_partial = 0
                     accumulated = np.concatenate(speech_buffer, axis=0)
                     whisper_task_queue.put((accumulated, False))
@@ -1011,31 +1202,41 @@ def run_camera(args):
                 if speech_active:
                     speech_buffer.append(chunk)
                     silence_frames += 1
-                    frames_since_partial += 1
                     
                     if silence_frames >= max_silence_frames:
                         speech_active = False
-                        logger.info("VAD: Speech ended (silence detected)")
+                        logger.info("VAD: Speech ended (silence detected, %d chunks)", len(speech_buffer))
                         accumulated = np.concatenate(speech_buffer, axis=0)
-                        whisper_task_queue.put((accumulated, True))
+                        # Clear old partials from queue so final is processed immediately
+                        while not whisper_task_queue.empty():
+                            try:
+                                whisper_task_queue.get_nowait()
+                            except queue.Empty:
+                                break
+                        if len(speech_buffer) >= 12:  # at least ~380ms of audio
+                            whisper_task_queue.put((accumulated, True))
                         speech_buffer = []
                         silence_frames = 0
                         frames_since_partial = 0
-                    elif frames_since_partial >= partial_interval_frames:
-                        frames_since_partial = 0
-                        accumulated = np.concatenate(speech_buffer, axis=0)
-                        whisper_task_queue.put((accumulated, False))
 
     # Whisper Thread
     def whisper_thread_func():
         global whisper_model, whisper_lock
         
+        speech_lang = getattr(args, "speech_language", None) or getattr(args, "language", "vi")
+        model_name = os.getenv("WHISPER_MODEL", "base")
+
         with whisper_lock:
             if whisper_model is None:
                 cuda = torch.cuda.is_available()
-                logger.info("Whisper Thread: Initializing Whisper 'small.en' (cuda=%s)...", cuda)
+                logger.info(
+                    "Whisper Thread: Initializing Whisper '%s' (cuda=%s, lang=%s)...",
+                    model_name,
+                    cuda,
+                    speech_lang,
+                )
                 whisper_model = WhisperModel(
-                    "small.en",
+                    model_name,
                     device="cuda" if cuda else "cpu",
                     compute_type="float16" if cuda else "int8"
                 )
@@ -1052,27 +1253,31 @@ def run_camera(args):
                     segments, info = whisper_model.transcribe(
                         audio_samples,
                         beam_size=2,
-                        language="en",
+                        language=speech_lang,
                         vad_filter=False
                     )
                     text = " ".join(s.text.strip() for s in segments).strip()
                     
                 if is_final:
-                    event = TranscriptEvent(
-                        partial_text="",
-                        final_text=text,
-                        timestamp=time.time(),
-                        language="en"
-                    )
-                    transcript_queue.put(event)
+                    if text:
+                        logger.info("Whisper Final: '%s' (lang=%s)", text, speech_lang)
+                        event = TranscriptEvent(
+                            partial_text="",
+                            final_text=text,
+                            timestamp=time.time(),
+                            language=speech_lang
+                        )
+                        transcript_queue.put(event)
                 else:
-                    event = TranscriptEvent(
-                        partial_text=text,
-                        final_text="",
-                        timestamp=time.time(),
-                        language="en"
-                    )
-                    transcript_queue.put(event)
+                    if text:
+                        logger.info("Whisper Partial: '%s'", text)
+                        event = TranscriptEvent(
+                            partial_text=text,
+                            final_text="",
+                            timestamp=time.time(),
+                            language=speech_lang
+                        )
+                        transcript_queue.put(event)
                     
             except Exception as e:
                 logger.error("Whisper Thread: Transcription error: %s", e)
@@ -1175,12 +1380,14 @@ def run_camera(args):
                         logger.info("Final Speech: %s", final_text)
                         state.add("speech", final_text, {"language": event.language})
                         speech_transcripts.append(final_text)
-                        transcript_display_until = time.monotonic() + 8.0
-                        send_to_oled(final_text)
+                        transcript_display_until = time.monotonic() + 10.0
+                        send_to_oled(f"MIC: {final_text}")
                         current_partial_text = ""
                     else:
                         current_partial_text = event.partial_text
-                        transcript_display_until = time.monotonic() + 8.0
+                        transcript_display_until = time.monotonic() + 10.0
+                        if len(current_partial_text) > 3:
+                            send_to_oled(f"MIC: {current_partial_text}")
             except queue.Empty:
                 pass
                 
@@ -1204,7 +1411,7 @@ def run_camera(args):
                 fps_frames = 0
                 fps_started = now
                 
-            # Status overlays
+            # Status overlays (Top Left)
             if speech_active:
                 status_text = "LISTENING"
                 status_color = (0, 165, 255)
@@ -1238,15 +1445,39 @@ def run_camera(args):
             )
             cv2.putText(
                 frame,
-                f"{label} {confidence:.0%}",
-                (20, h - 25),
+                f"SIGN: {label} ({confidence:.0%})",
+                (20, 95),
                 cv2.FONT_HERSHEY_SIMPLEX,
-                0.75,
+                0.65,
                 (0, 255, 255),
                 2,
             )
-            
-            # UI control hints
+
+            # VU Level Meter & Microphone Status (Top Right)
+            meter_w = 120
+            meter_h = 12
+            meter_x = w - meter_w - 20
+            meter_y = 22
+
+            # Background bar
+            cv2.rectangle(frame, (meter_x, meter_y), (meter_x + meter_w, meter_y + meter_h), (40, 40, 40), -1)
+            cv2.rectangle(frame, (meter_x, meter_y), (meter_x + meter_w, meter_y + meter_h), (130, 130, 130), 1)
+
+            # Filled audio meter bar
+            fill_w = int(np.clip(mic_volume_level * 2.5, 0.0, 1.0) * meter_w)
+            if fill_w > 0:
+                meter_color = (0, 255, 0) if fill_w < meter_w * 0.6 else ((0, 220, 255) if fill_w < meter_w * 0.85 else (0, 0, 255))
+                cv2.rectangle(frame, (meter_x + 1, meter_y + 1), (meter_x + fill_w, meter_y + meter_h - 1), meter_color, -1)
+
+            # Source label
+            cv2.putText(frame, f"MIC: {mic_source_str}", (meter_x, meter_y - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (220, 220, 220), 1)
+
+            # Blinking REC dot when VAD detects speech
+            if speech_active and (int(now * 3) % 2 == 0):
+                cv2.circle(frame, (meter_x - 12, meter_y + 6), 5, (0, 0, 255), -1)
+                cv2.putText(frame, "REC", (meter_x - 45, meter_y + 10), cv2.FONT_HERSHEY_SIMPLEX, 0.38, (0, 0, 255), 1)
+
+            # UI control hints (Above banner)
             hints = [
                 "SPACE: Sign session",
                 "Q: Quit",
@@ -1255,33 +1486,28 @@ def run_camera(args):
                 cv2.putText(
                     frame,
                     hint,
-                    (w - 220, h - 10 - (len(hints) - 1 - i) * 22),
+                    (w - 200, h - 95 - (len(hints) - 1 - i) * 20),
                     cv2.FONT_HERSHEY_SIMPLEX,
                     0.45,
                     (180, 180, 180),
                     1,
                 )
-                
-            # Show speech transcripts
-            display_lines = list(speech_transcripts)
+
+            # High-contrast Speech-to-Text Subtitle Banner (Bottom)
+            display_title = ""
+            display_text = ""
             if current_partial_text:
-                display_lines.append(current_partial_text)
-            display_lines = display_lines[-3:]
-            
-            if display_lines and now < transcript_display_until:
-                y_offset = 95
-                for line in display_lines:
-                    display_line = line if len(line) <= 60 else line[:57] + "..."
-                    cv2.putText(
-                        frame,
-                        display_line,
-                        (20, y_offset),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.5,
-                        (255, 200, 0),
-                        1,
-                    )
-                    y_offset += 22
+                display_title = "🎙️ ĐANG NÓI (ESP32 MIC)..."
+                display_text = current_partial_text
+            elif speech_transcripts and now < transcript_display_until:
+                display_title = "🎙️ LỜI NÓI (ESP32 MICROPHONE):"
+                display_text = speech_transcripts[-1]
+            elif speech_active:
+                display_title = "🎙️ MICROPHONE:"
+                display_text = "Đang lắng nghe giọng nói..."
+
+            if display_title and display_text:
+                frame = draw_vn_banner(frame, display_title, display_text)
                     
             cv2.imshow("Communication Assistant", frame)
             key = cv2.waitKey(1) & 0xFF
@@ -1346,8 +1572,10 @@ def main():
                         help="Microphone device index or name")
     parser.add_argument("--sample-rate", type=int, default=16000,
                         help="Microphone sample rate in Hz")
-    parser.add_argument("--speech-language", default="en",
-                        help="Language for speech transcription")
+    parser.add_argument("--esp-ip", default=None,
+                        help="IP address of ESP32 (if different from camera hostname)")
+    parser.add_argument("--speech-language", default="vi",
+                        help="Language for speech transcription (vi or en)")
 
     parser.add_argument(
         "--hand-detection-confidence",
