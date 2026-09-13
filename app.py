@@ -899,11 +899,7 @@ def run_camera(args):
     )
     detector=vision.HandLandmarker.create_from_options(options)
 
-    source=int(args.camera) if str(args.camera).isdigit() else args.camera
-    camera=LatestFrameCamera(source)
-    camera.wait_until_connected(args.camera_connect_timeout)
-
-    # Parse ESP32 IP for OLED, Speaker and Microphone stream
+    # Parse ESP32 IP for OLED, Speaker, Mic and Camera stream
     esp_ip = getattr(args, "esp_ip", None)
     if not esp_ip and isinstance(args.camera, str) and args.camera.startswith("http"):
         from urllib.parse import urlparse as _urlparse
@@ -911,6 +907,48 @@ def run_camera(args):
             esp_ip = _urlparse(args.camera).hostname
         except Exception:
             pass
+
+    # Auto-discover ESP32 if current IP is unreachable or changed by DHCP
+    def resolve_esp_ip(target_ip):
+        if target_ip:
+            try:
+                r = http_session.get(f"http://{target_ip}/status", timeout=0.6)
+                if r.status_code == 200 and "Blind to Bright" in r.text:
+                    return target_ip
+            except Exception:
+                logger.warning("ESP32 IP '%s' is not responding, scanning local network...", target_ip)
+
+        import subprocess
+        try:
+            out = subprocess.check_output("arp -a", shell=True, text=True)
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].count(".") == 3:
+                    cand = parts[0]
+                    if cand == target_ip:
+                        continue
+                    try:
+                        r = http_session.get(f"http://{cand}/status", timeout=0.3)
+                        if r.status_code == 200 and "Blind to Bright" in r.text:
+                            logger.info("Found ESP32 online at new IP: %s", cand)
+                            return cand
+                    except Exception:
+                        pass
+        except Exception as e:
+            logger.warning("ARP scan error: %s", e)
+
+        return target_ip
+
+    resolved_ip = resolve_esp_ip(esp_ip)
+    if resolved_ip and resolved_ip != esp_ip:
+        logger.info("Auto-updated ESP32 IP from %s to %s", esp_ip, resolved_ip)
+        esp_ip = resolved_ip
+        if isinstance(args.camera, str) and args.camera.startswith("http"):
+            args.camera = f"http://{esp_ip}:81/stream"
+
+    source = int(args.camera) if str(args.camera).isdigit() else args.camera
+    camera = LatestFrameCamera(source)
+    camera.wait_until_connected(args.camera_connect_timeout)
 
     tts = start_tts_worker(args.camera, language=args.language, esp_ip=esp_ip)
     time.sleep(0.3)
