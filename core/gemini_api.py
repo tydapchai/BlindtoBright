@@ -8,10 +8,10 @@ import itertools
 from pathlib import Path
 
 def load_env_file():
-    """Tự động đọc file .env ở thư mục core/ hoặc thư mục gốc dự án."""
+    """Tự động đọc file .env ở thư mục configs/, core/ hoặc thư mục gốc dự án."""
     current_dir = Path(__file__).resolve().parent
     root_dir = current_dir.parent
-    for env_path in [current_dir / ".env", root_dir / ".env"]:
+    for env_path in [root_dir / "configs" / ".env", current_dir / ".env", root_dir / ".env"]:
         if env_path.is_file():
             try:
                 with open(env_path, "r", encoding="utf-8") as f:

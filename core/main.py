@@ -122,11 +122,18 @@ def draw_vn_banner(frame, title, text):
     cv2.putText(frame, f"{title}: {text}", (20, frame.shape[0] - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
     return frame
 
+def _resolve_default(preferred: Path, fallback: Path) -> str:
+    return str(preferred if preferred.exists() else fallback)
+
 def main():
+    default_ckpt = _resolve_default(ROOT_DIR / "models" / "best_bigru_v2.pt", ROOT_DIR / "best_bigru_v2.pt")
+    default_conv = _resolve_default(ROOT_DIR / "configs" / "conversation.json", ROOT_DIR / "conversation_config.json")
+    default_hand = _resolve_default(ROOT_DIR / "models" / "hand_landmarker.task", ROOT_DIR / "hand_landmarker.task")
+
     parser = argparse.ArgumentParser()
-    parser.add_argument("--checkpoint", default=str(ROOT_DIR / "best_bigru_v2.pt"))
-    parser.add_argument("--conversation", default=str(ROOT_DIR / "conversation_config.json"))
-    parser.add_argument("--hand-model", default=str(ROOT_DIR / "hand_landmarker.task"))
+    parser.add_argument("--checkpoint", default=default_ckpt)
+    parser.add_argument("--conversation", default=default_conv)
+    parser.add_argument("--hand-model", default=default_hand)
     parser.add_argument("--camera", default="0")
     parser.add_argument("--esp-ip", default=None, help="IP của ESP32")
     parser.add_argument("--camera-connect-timeout", type=float, default=6.0)
@@ -250,11 +257,17 @@ def main():
 
     print("Hệ thống đã sẵn sàng! Bấm 'SPACE' thu ký hiệu, bấm 'M' thu âm.")
 
+    last_frame_id = -1
+    last_mp_timestamp_ms = -1
+    result = None
+
     while not shutdown_event.is_set():
-        ret, frame = cap.read()
-        if not ret: continue
+        is_new, last_frame_id, frame = cap.read_latest(last_frame_id)
+        if frame is None:
+            time.sleep(0.01)
+            continue
+
         key = cv2.waitKey(1) & 0xFF
-        now_ms = int(time.monotonic() * 1000)
 
         # 1. BẤM NÚT KÝ HIỆU (SPACE)
         if key == 32: 
@@ -323,10 +336,25 @@ def main():
             shutdown_event.set()
             break
 
-        # MediaPipe Vision
-        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
-        result = detector.detect_for_video(mp_image, now_ms)
+        # MediaPipe Vision - Chỉ xử lý khi có frame mới và đảm bảo timestamp strictly monotonic
+        if is_new:
+            now_ms = int(time.monotonic() * 1000)
+            if now_ms <= last_mp_timestamp_ms:
+                now_ms = last_mp_timestamp_ms + 1
+            last_mp_timestamp_ms = now_ms
+
+            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
+            try:
+                result = detector.detect_for_video(mp_image, now_ms)
+            except Exception:
+                result = None
+
+            if is_capturing_sign and result and result.hand_landmarks:
+                feats = frame_features(result)
+                sign_sequence.append(feats)
+        else:
+            time.sleep(0.005)
         
         if result and result.hand_landmarks:
             for landmarks in result.hand_landmarks:
@@ -334,10 +362,6 @@ def main():
                     pt_a = (int(landmarks[idx_a].x * frame.shape[1]), int(landmarks[idx_a].y * frame.shape[0]))
                     pt_b = (int(landmarks[idx_b].x * frame.shape[1]), int(landmarks[idx_b].y * frame.shape[0]))
                     cv2.line(frame, pt_a, pt_b, (0, 255, 0), 2)
-            
-            if is_capturing_sign:
-                feats = frame_features(result)
-                sign_sequence.append(feats)
 
         cv2.putText(frame, "[SPACE]: Thu Kieu Hieu | [M]: Ghi Am | [Q]: Thoat", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
         if is_capturing_sign:

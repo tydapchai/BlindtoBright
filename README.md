@@ -4,33 +4,34 @@
 
 Import `wlasl_communication_v2.ipynb`, Add Input dataset WLASL, bật GPU và Run All.
 
-Tải về:
+Tải về và đặt vào các thư mục tương ứng:
 
-- `best_bigru_v2.pt`
-- `conversation_config.json`
-- `hand_landmarker.task`
+- `models/best_bigru_v2.pt`
+- `models/hand_landmarker.task`
+- `configs/conversation.json`
 
-## 2. Chuẩn bị app
-
-Đặt các file trên cùng thư mục với `app.py`.
+## 2. Chuẩn bị môi trường
 
 ```bash
 python3 -m venv .venv
-source .venv/bin/activate
+source .venv/bin/activate  # Hoặc: .\.venv\Scripts\Activate.ps1 trên Windows
 pip install -r requirements.txt
-sudo apt install espeak-ng ffmpeg
 ```
 
-## 3. Chạy webcam
+## 3. Khởi chạy ứng dụng
 
+Chạy phiên bản chính (Gemini Cloud):
 ```bash
-python app.py --camera 0 --language vi
+python core/main.py
+```
+Hoặc dùng script:
+```powershell
+.\run.ps1
 ```
 
-IP camera:
-
+Chạy phiên bản offline dự phòng (Whisper cục bộ):
 ```bash
-python app.py --camera "http://PHONE_IP:8080/video" --language vi
+python backup/app_offline.py --camera 0 --language vi
 ```
 
 ## 4. Điều khiển sign recognition
