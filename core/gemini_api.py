@@ -5,26 +5,57 @@ import requests
 import wave
 import numpy as np
 import itertools
+from pathlib import Path
 
-# Điền 3 API key của bạn vào đây (ngăn cách bằng dấu phẩy)
-# Hoặc truyền qua biến môi trường: export GEMINI_API_KEYS="key1,key2,key3"
-KEYS_ENV = os.getenv("GEMINI_API_KEYS")
+def load_env_file():
+    """Tự động đọc file .env ở thư mục core/ hoặc thư mục gốc dự án."""
+    current_dir = Path(__file__).resolve().parent
+    root_dir = current_dir.parent
+    for env_path in [current_dir / ".env", root_dir / ".env"]:
+        if env_path.is_file():
+            try:
+                with open(env_path, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line and not line.startswith("#") and "=" in line:
+                            k, v = line.split("=", 1)
+                            k = k.strip()
+                            v = v.strip().strip("'\"")
+                            if k not in os.environ:
+                                os.environ[k] = v
+            except Exception:
+                pass
+
+load_env_file()
+
+# Nhận cả GEMINI_API_KEYS (nhiều key ngăn cách bởi dấu phẩy) hoặc GEMINI_API_KEY (1 key)
+KEYS_ENV = os.getenv("GEMINI_API_KEYS") or os.getenv("GEMINI_API_KEY") or ""
 
 # Tách chuỗi thành danh sách các key hợp lệ
 API_KEYS = [k.strip() for k in KEYS_ENV.split(",") if k.strip()]
 
 class GeminiClient:
-    def __init__(self):
-        if not API_KEYS:
-            raise ValueError("Vui lòng cung cấp ít nhất 1 API Key!")
-        
-        self.api_keys = API_KEYS
-        # Khởi tạo bộ xoay vòng vô tận qua danh sách key
-        self.key_pool = itertools.cycle(self.api_keys)
+    def __init__(self, api_keys=None):
+        if api_keys:
+            if isinstance(api_keys, str):
+                self.api_keys = [k.strip() for k in api_keys.split(",") if k.strip()]
+            else:
+                self.api_keys = list(api_keys)
+        else:
+            self.api_keys = API_KEYS
+
+        if not self.api_keys:
+            print("[Gemini API Warning] Chưa có GEMINI_API_KEYS. Hãy set biến môi trường GEMINI_API_KEYS hoặc truyền --gemini-key!")
+            self.key_pool = None
+        else:
+            self.key_pool = itertools.cycle(self.api_keys)
+
         self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
 
     def _get_next_key(self):
         """Lấy key tiếp theo trong vòng xoay và in log để dễ debug"""
+        if not self.key_pool:
+            return None
         key = next(self.key_pool)
         # Ẩn bớt key khi in ra console để bảo mật
         print(f"[Gemini API] Đang sử dụng Key: {key[:6]}...{key[-4:]}") 
