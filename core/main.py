@@ -6,8 +6,9 @@ import numpy as np
 import threading
 import argparse
 import requests
+import subprocess # Thêm thư viện để chạy lệnh arp
 from pathlib import Path
-import mediapipe as mp # Đã bổ sung import
+import mediapipe as mp
 
 from config import state, shutdown_event
 from models import GestureBiGRU, frame_features, prepare, HAND_CONNECTIONS
@@ -46,28 +47,88 @@ def main():
         sentence_map = json.load(f)["intent_sentences"]
 
     options = vision.HandLandmarkerOptions(
-        base_options=mp.tasks.BaseOptions(model_asset_path=args.hand_model), # Đã sửa cú pháp
+        base_options=mp.tasks.BaseOptions(model_asset_path=args.hand_model),
         running_mode=vision.RunningMode.VIDEO, num_hands=2
     )
     detector = vision.HandLandmarker.create_from_options(options)
-    cap = cv2.VideoCapture(int(args.camera) if args.camera.isdigit() else args.camera)
+
+    # =========================================================================
+    # LOGIC AUTO-DISCOVER ESP32 IP
+    # =========================================================================
+    esp_ip = getattr(args, "esp_ip", None)
+    if not esp_ip and isinstance(args.camera, str) and args.camera.startswith("http"):
+        from urllib.parse import urlparse as _urlparse
+        try: # Đã thêm khối try bị thiếu
+            esp_ip = _urlparse(args.camera).hostname
+        except Exception:
+            pass
+
+    def resolve_esp_ip(target_ip):
+        if target_ip:
+            try:
+                r = http_session.get(f"http://{target_ip}/status", timeout=0.6)
+                if r.status_code == 200 and "Blind to Bright" in r.text:
+                    return target_ip
+            except Exception:
+                print(f"[Auto-Discover] IP '{target_ip}' không phản hồi, đang quét mạng LAN...")
+
+        try:
+            out = subprocess.check_output("arp -a", shell=True, text=True)
+            for line in out.splitlines():
+                parts = line.split()
+                if len(parts) >= 2 and parts[0].count(".") == 3:
+                    cand = parts[0]
+                    if cand == target_ip:
+                        continue
+                    try:
+                        r = http_session.get(f"http://{cand}/status", timeout=0.3)
+                        if r.status_code == 200 and "Blind to Bright" in r.text:
+                            print(f"[Auto-Discover] Đã tìm thấy ESP32 tại IP mới: {cand}")
+                            return cand
+                    except Exception:
+                        pass
+        except Exception as e:
+            print(f"[Auto-Discover] Lỗi quét ARP: {e}")
+
+        return target_ip
+
+    resolved_ip = resolve_esp_ip(esp_ip)
+    if resolved_ip and resolved_ip != esp_ip:
+        print(f"[Auto-Discover] Cập nhật IP ESP32 từ {esp_ip} thành {resolved_ip}")
+        esp_ip = resolved_ip
+        args.esp_ip = resolved_ip # Lưu lại vào args để luồng Audio_fetch dùng chung
+        if isinstance(args.camera, str) and args.camera.startswith("http"):
+            args.camera = f"http://{esp_ip}:81/stream"
+    # =========================================================================
+
+    # Khởi tạo Camera và Gemini 
+    source = int(args.camera) if str(args.camera).isdigit() else args.camera
+    cap = cv2.VideoCapture(source)
     gemini = GeminiClient()
 
+    # Phát lời chào sẵn sàng qua TTS Gemini
+    ready_msg = "Hệ thống Blind to Bright đã sẵn sàng"
+    def welcome_speaker():
+        pcm = gemini.generate_speech(ready_msg)
+        if args.esp_ip and pcm:
+            try:
+                requests.post(f"http://{args.esp_ip}/play", data=pcm, timeout=5)
+            except: pass
+    threading.Thread(target=welcome_speaker).start()
+
+    # Các biến trạng thái của UI
     is_recording_audio = False
     is_capturing_sign = False
     audio_buffer = bytearray()
     sign_sequence = []
     display_text, display_title = "", ""
 
-    # ==============================================================
-    # VÁ LỖI 1: THÊM LUỒNG HÚT ÂM THANH TỪ ESP32
-    # ==============================================================
+    # Luồng hút âm thanh từ Mic I2S của ESP32
     def audio_fetch_worker():
         nonlocal audio_buffer, is_recording_audio
         while not shutdown_event.is_set():
             if is_recording_audio and args.esp_ip:
                 try:
-                    # Gọi endpoint stream âm thanh của ESP32 (port 82 là ví dụ từ code cũ)
                     resp = http_session.get(f"http://{args.esp_ip}:82/mic", stream=True, timeout=2.0)
                     if resp.status_code == 200:
                         for chunk in resp.iter_content(chunk_size=1024):
@@ -75,13 +136,12 @@ def main():
                                 break
                             if chunk:
                                 audio_buffer.extend(chunk)
-                except Exception as e:
+                except Exception:
                     time.sleep(0.5)
             else:
                 time.sleep(0.1)
                 
     threading.Thread(target=audio_fetch_worker, daemon=True).start()
-    # ==============================================================
 
     print("Hệ thống đã sẵn sàng! Bấm 'SPACE' thu ký hiệu, bấm 'M' thu âm.")
 
@@ -129,7 +189,7 @@ def main():
         elif key == ord('m') or key == ord('M'):
             is_recording_audio = not is_recording_audio
             if is_recording_audio:
-                audio_buffer = bytearray() # Reset buffer khi bắt đầu thu
+                audio_buffer = bytearray()
                 display_title = "DANG THU AM..."
                 display_text = "Nguoi doi dien hay noi..."
             else:
@@ -138,7 +198,7 @@ def main():
                 
                 def transcribe_job(pcm_bytes):
                     nonlocal display_title, display_text
-                    if len(pcm_bytes) < 4000: # Tránh gửi file âm thanh trống
+                    if len(pcm_bytes) < 4000:
                         display_title, display_text = "STT", "Khong nghe gi"
                         return
                     text = gemini.transcribe_audio(pcm_bytes)
@@ -147,7 +207,6 @@ def main():
                     state.add("speech", display_text)
                     if args.esp_ip:
                         try:
-                            # Encode ascii để ESP32 OLED không bị lỗi font nếu chưa có font TV
                             import unicodedata
                             clean = unicodedata.normalize('NFKD', display_text).encode('ASCII', 'ignore')
                             requests.post(f"http://{args.esp_ip}/oled", data=clean)
@@ -159,7 +218,7 @@ def main():
             shutdown_event.set()
             break
 
-        # Sửa cú pháp truyền ảnh vào MediaPipe
+        # MediaPipe Vision
         rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         mp_image = mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb)
         result = detector.detect_for_video(mp_image, now_ms)
