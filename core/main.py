@@ -119,7 +119,15 @@ class LatestFrameCamera:
         self._local_stop.set()
 
 def draw_vn_banner(frame, title, text):
-    cv2.putText(frame, f"{title}: {text}", (20, frame.shape[0] - 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+    h, w = frame.shape[:2]
+    banner_h = 75
+    overlay = frame.copy()
+    cv2.rectangle(overlay, (0, h - banner_h), (w, h), (15, 15, 15), -1)
+    cv2.addWeighted(overlay, 0.85, frame, 0.15, 0, frame)
+    cv2.line(frame, (0, h - banner_h), (w, h - banner_h), (0, 215, 255), 2)
+    
+    cv2.putText(frame, title.upper(), (25, h - banner_h + 28), cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 215, 255), 2)
+    cv2.putText(frame, text, (25, h - 16), cv2.FONT_HERSHEY_SIMPLEX, 0.85, (255, 255, 255), 2)
     return frame
 
 def _resolve_default(preferred: Path, fallback: Path) -> str:
@@ -202,14 +210,19 @@ def main():
         return target_ip
 
     resolved_ip = resolve_esp_ip(esp_ip)
-    if resolved_ip and resolved_ip != esp_ip:
-        print(f"[Auto-Discover] Cập nhật IP ESP32 từ {esp_ip} thành {resolved_ip}")
+    if resolved_ip:
         esp_ip = resolved_ip
         args.esp_ip = resolved_ip
-        if isinstance(args.camera, str) and args.camera.startswith("http"):
+        if str(args.camera).lower() in ["esp", "esp32", "cam"]:
             args.camera = f"http://{esp_ip}:81/stream"
-    elif esp_ip:
-        args.esp_ip = esp_ip
+            print(f"[Camera] Đang sử dụng Camera ESP32: {args.camera}")
+        elif isinstance(args.camera, str) and args.camera.startswith("http"):
+            args.camera = f"http://{esp_ip}:81/stream"
+            print(f"[Camera] Đang sử dụng luồng: {args.camera}")
+    else:
+        if str(args.camera).lower() in ["esp", "esp32", "cam"]:
+            print("[Camera Warning] Không tìm thấy ESP32 trên mạng, chuyển về Webcam laptop (0)")
+            args.camera = "0"
     # =========================================================================
 
     # Khởi tạo Camera và Gemini 
@@ -260,6 +273,10 @@ def main():
     last_frame_id = -1
     last_mp_timestamp_ms = -1
     result = None
+
+    WINDOW_NAME = "Communication Assistant"
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WINDOW_NAME, 1024, 768)
 
     while not shutdown_event.is_set():
         is_new, last_frame_id, frame = cap.read_latest(last_frame_id)
@@ -356,25 +373,36 @@ def main():
         else:
             time.sleep(0.005)
         
+        # Phóng to khung hình lên kích thước lớn (chuẩn HD/XGA) để cửa sổ to rõ ràng
+        orig_h, orig_w = frame.shape[:2]
+        target_w = max(orig_w, 960)
+        target_h = int(orig_h * (target_w / orig_w))
+        display_frame = cv2.resize(frame, (target_w, target_h), interpolation=cv2.INTER_LINEAR)
+
+        # Vẽ khung xương tay trên hình ảnh đã phóng to
         if result and result.hand_landmarks:
             for landmarks in result.hand_landmarks:
                 for idx_a, idx_b in HAND_CONNECTIONS:
-                    pt_a = (int(landmarks[idx_a].x * frame.shape[1]), int(landmarks[idx_a].y * frame.shape[0]))
-                    pt_b = (int(landmarks[idx_b].x * frame.shape[1]), int(landmarks[idx_b].y * frame.shape[0]))
-                    cv2.line(frame, pt_a, pt_b, (0, 255, 0), 2)
+                    pt_a = (int(landmarks[idx_a].x * target_w), int(landmarks[idx_a].y * target_h))
+                    pt_b = (int(landmarks[idx_b].x * target_w), int(landmarks[idx_b].y * target_h))
+                    cv2.line(display_frame, pt_a, pt_b, (0, 255, 0), 2)
+                    cv2.circle(display_frame, pt_a, 4, (0, 0, 255), -1)
+                    cv2.circle(display_frame, pt_b, 4, (0, 0, 255), -1)
 
-        cv2.putText(frame, "[SPACE]: Thu Kieu Hieu | [M]: Ghi Am | [Q]: Thoat", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255,255,255), 1)
+        # Thanh hướng dẫn phía trên
+        cv2.putText(display_frame, "[SPACE]: Thu Ky Hieu | [M]: Ghi Am | [Q]: Thoat", (25, 40), cv2.FONT_HERSHEY_SIMPLEX, 0.75, (255, 255, 255), 2)
+        
         if is_capturing_sign:
-            cv2.circle(frame, (30, 60), 10, (0, 0, 255), -1)
-            cv2.putText(frame, "DANG QUAY", (50, 65), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,0,255), 2)
+            cv2.circle(display_frame, (35, 78), 12, (0, 0, 255), -1)
+            cv2.putText(display_frame, "DANG THU KY HIEU...", (58, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         if is_recording_audio:
-            cv2.circle(frame, (30, 90), 10, (0, 165, 255), -1)
-            cv2.putText(frame, "DANG THU MIC", (50, 95), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0,165,255), 2)
+            cv2.circle(display_frame, (35, 120), 12, (0, 165, 255), -1)
+            cv2.putText(display_frame, "DANG THU MIC (INMP441)...", (58, 127), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
 
         if display_title:
-            frame = draw_vn_banner(frame, display_title, display_text)
+            display_frame = draw_vn_banner(display_frame, display_title, display_text)
 
-        cv2.imshow("Blind to Bright", frame)
+        cv2.imshow(WINDOW_NAME, display_frame)
 
     cap.release()
     cv2.destroyAllWindows()
