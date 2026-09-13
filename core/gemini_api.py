@@ -5,52 +5,54 @@ import requests
 import wave
 import numpy as np
 import itertools
+from dotenv import load_dotenv
 
-# Điền 3 API key của bạn vào đây (ngăn cách bằng dấu phẩy)
-# Hoặc truyền qua biến môi trường: export GEMINI_API_KEYS="key1,key2,key3"
-KEYS_ENV = os.getenv("GEMINI_API_KEYS")
+# Tự động nạp file .env ngay khi import
+load_dotenv()
 
-# Tách chuỗi thành danh sách các key hợp lệ
+# Đọc key từ biến môi trường
+KEYS_ENV = os.getenv("GEMINI_API_KEYS") or ""
 API_KEYS = [k.strip() for k in KEYS_ENV.split(",") if k.strip()]
 
 class GeminiClient:
     def __init__(self):
         if not API_KEYS:
-            raise ValueError("Vui lòng cung cấp ít nhất 1 API Key!")
+            raise ValueError("Vui lòng cung cấp ít nhất 1 API Key trong file .env!")
         
         self.api_keys = API_KEYS
-        # Khởi tạo bộ xoay vòng vô tận qua danh sách key
         self.key_pool = itertools.cycle(self.api_keys)
         self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
+        
+        self.stt_model = "gemini-3.1-flash-lite" 
+        self.tts_model = "gemini-2.5-flash-preview-tts"
 
     def _get_next_key(self):
-        """Lấy key tiếp theo trong vòng xoay và in log để dễ debug"""
         key = next(self.key_pool)
-        # Ẩn bớt key khi in ra console để bảo mật
-        print(f"[Gemini API] Đang sử dụng Key: {key[:6]}...{key[-4:]}") 
+        print(f"[Gemini API] Đang dùng Key: {key[:6]}...{key[-4:]}") 
         return key
 
     def transcribe_audio(self, pcm_data: bytes, sample_rate=16000) -> str:
-        """Sử dụng gemini để chuyển PCM 16-bit thành Text với cơ chế xoay vòng Key"""
+        """Sử dụng Gemini để chuyển Audio thành Text (STT)"""
         try:
-            # Đóng gói PCM thành file WAV trong bộ nhớ
+            # Đóng gói PCM thành WAV trong RAM
             wav_io = io.BytesIO()
             with wave.open(wav_io, 'wb') as wav_file:
                 wav_file.setnchannels(1)
-                wav_file.setsampwidth(2) # 16-bit
+                wav_file.setsampwidth(2)
                 wav_file.setframerate(sample_rate)
                 wav_file.writeframes(pcm_data)
             
             b64_audio = base64.b64encode(wav_io.getvalue()).decode("utf-8")
             
-            # Thử tối đa số lần bằng đúng số lượng key đang có
             for _ in range(len(self.api_keys)):
                 current_key = self._get_next_key()
-                url = f"{self.base_url}/gemini-1.5-pro:generateContent?key={current_key}"
+                # Endpoint CHUẨN theo tài liệu: generateContent
+                url = f"{self.base_url}/{self.stt_model}:generateContent?key={current_key}"
+                
                 payload = {
                     "contents": [{
                         "parts": [
-                            {"text": "Transcribe this audio precisely in Vietnamese. Only return the transcription, no other text."},
+                            {"text": "Trích xuất văn bản từ âm thanh này bằng tiếng Việt. Chỉ trả về văn bản, không thêm bất kỳ chữ nào khác."},
                             {"inline_data": {"mime_type": "audio/wav", "data": b64_audio}}
                         ]
                     }]
@@ -58,61 +60,102 @@ class GeminiClient:
                 
                 resp = requests.post(url, json=payload, timeout=15.0)
                 
-                # Nếu bị Rate Limit (hết quota phút), bỏ qua và thử key tiếp theo ngay lập tức
                 if resp.status_code == 429:
-                    print(f"[Gemini STT Warning] Key {current_key[:6]}... bị Rate Limit (429). Chuyển key khác...")
+                    print(f"[Gemini STT Warning] Key bị quá tải (429). Đang chuyển key...")
                     continue 
                     
-                resp.raise_for_status()
+                if resp.status_code != 200:
+                    print(f"[Gemini STT Error] {resp.status_code}: {resp.text}")
+                    return ""
                 
-                # Parse kết quả thành công
                 data = resp.json()
-                text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
-                return text
+                
+                # Trích xuất text an toàn từ JSON response
+                try:
+                    text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    return text
+                except (KeyError, IndexError):
+                     print("[Gemini STT Error] Không tìm thấy text trong phản hồi.")
+                     return ""
                 
             print("[Gemini STT Error] TẤT CẢ các Key đều đang bị Rate Limit!")
             return ""
             
         except Exception as e:
-            print(f"[Gemini STT Error] {e}")
+            print(f"[Gemini STT Error] Lỗi hệ thống: {e}")
             return ""
 
     def generate_speech(self, text: str) -> bytes:
-        """Sử dụng gemini-tts để chuyển Text thành PCM audio bytes với cơ chế xoay vòng Key"""
+        """Sử dụng tính năng Audio Modality của Gemini để sinh giọng đọc (TTS)"""
         try:
-            # Thử tối đa số lần bằng đúng số lượng key đang có
             for _ in range(len(self.api_keys)):
                 current_key = self._get_next_key()
-                url = f"{self.base_url}/gemini-2.5-flash-preview-tts:predict?key={current_key}"
+                
+                # Vẫn sử dụng generateContent cho việc sinh âm thanh
+                url = f"{self.base_url}/{self.tts_model}:generateContent?key={current_key}"
+                
                 payload = {
-                    "instances": [{"text": text, "language": "vi-VN"}],
-                    "parameters": {"voice_name": "vi-VN-Standard-A", "audio_encoding": "LINEAR16"}
+                    "contents": [{
+                        "parts": [{"text": f"Đọc to câu sau bằng tiếng Việt với giọng điệu tự nhiên: {text}"}]
+                    }],
+                    "generationConfig": {
+                        "responseModalities": ["AUDIO"],
+                        "speechConfig": {
+                            "voiceConfig": {
+                                "prebuiltVoiceConfig": {
+                                    "voiceName": "Aoede"
+                                }
+                            }
+                        }
+                    }
                 }
                 
-                resp = requests.post(url, json=payload, timeout=10.0)
+                resp = requests.post(url, json=payload, timeout=15.0)
                 
-                # Tự động nhảy sang key khác nếu gặp lỗi giới hạn 429
                 if resp.status_code == 429:
-                    print(f"[Gemini TTS Warning] Key {current_key[:6]}... bị Rate Limit (429). Chuyển key khác...")
+                    print(f"[Gemini TTS Warning] Key bị quá tải (429). Đang chuyển key...")
                     continue
                     
-                resp.raise_for_status()
+                if resp.status_code != 200:
+                    print(f"[Gemini TTS Error] {resp.status_code}: {resp.text}")
+                    return b""
                 
                 data = resp.json()
-                audio_b64 = data["predictions"][0]["audio_content"]
-                pcm_bytes = base64.b64decode(audio_b64)
                 
-                # Cắt header WAV (RIFF) nếu model trả về format WAV thay vì RAW PCM
-                if pcm_bytes.startswith(b'RIFF'):
-                    pcm_bytes = pcm_bytes[44:]
+                # Bóc tách dữ liệu Audio PCM base64 từ JSON
+                try:
+                    parts = data["candidates"][0]["content"]["parts"]
+                    audio_b64 = None
+                    for part in parts:
+                        if "inlineData" in part and part["inlineData"].get("mimeType", "").startswith("audio/"):
+                            audio_b64 = part["inlineData"]["data"]
+                            break
+                            
+                    if not audio_b64:
+                        print("[Gemini TTS Error] Gemini không trả về dữ liệu âm thanh.")
+                        return b""
+                        
+                    pcm_bytes = base64.b64decode(audio_b64)
                     
-                mono_array = np.frombuffer(pcm_bytes, dtype=np.int16)
-                stereo_array = np.column_stack((mono_array, mono_array)).flatten()
-                return stereo_array.tobytes()
+                    # Chuyển đổi tần số lấy mẫu từ 24kHz của Gemini xuống 16kHz của ESP32
+                    audio_int16 = np.frombuffer(pcm_bytes, dtype=np.int16)
+                    orig_indices = np.arange(len(audio_int16))
+                    target_length = int(len(audio_int16) * (16000 / 24000))
+                    new_indices = np.linspace(0, len(audio_int16) - 1, target_length)
+                    
+                    resampled = np.interp(new_indices, orig_indices, audio_int16).astype(np.int16)
+                    
+                    # Chuyển thành Stereo (L+R)
+                    stereo_array = np.column_stack((resampled, resampled)).flatten()
+                    return stereo_array.tobytes()
+
+                except (KeyError, IndexError):
+                     print("[Gemini TTS Error] Cấu trúc phản hồi JSON không đúng.")
+                     return b""
                 
             print("[Gemini TTS Error] TẤT CẢ các Key đều đang bị Rate Limit!")
             return b""
             
         except Exception as e:
-            print(f"[Gemini TTS Error] {e}")
+            print(f"[Gemini TTS Error] Lỗi hệ thống: {e}")
             return b""

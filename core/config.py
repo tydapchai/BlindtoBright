@@ -1,5 +1,9 @@
 import threading
 import time
+from dotenv import load_dotenv
+
+# Tìm và nạp các biến từ file .env vào môi trường hệ thống
+load_dotenv()
 
 class State:
     def __init__(self):
