@@ -940,11 +940,17 @@ def run_camera(args):
         return target_ip
 
     resolved_ip = resolve_esp_ip(esp_ip)
-    if resolved_ip and resolved_ip != esp_ip:
-        logger.info("Auto-updated ESP32 IP from %s to %s", esp_ip, resolved_ip)
+    if resolved_ip:
         esp_ip = resolved_ip
-        if isinstance(args.camera, str) and args.camera.startswith("http"):
+        if str(args.camera).lower() in ["esp", "esp32", "cam"]:
             args.camera = f"http://{esp_ip}:81/stream"
+            logger.info("Using ESP32 camera: %s", args.camera)
+        elif isinstance(args.camera, str) and args.camera.startswith("http"):
+            args.camera = f"http://{esp_ip}:81/stream"
+    else:
+        if str(args.camera).lower() in ["esp", "esp32", "cam"]:
+            logger.warning("ESP32 not found, falling back to local webcam (0)")
+            args.camera = "0"
 
     source = int(args.camera) if str(args.camera).isdigit() else args.camera
     camera = LatestFrameCamera(source)
@@ -1407,6 +1413,10 @@ def run_camera(args):
     display_fps = 0.0
     last_frame_id = -1
     
+    WINDOW_NAME = "Communication Assistant"
+    cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WINDOW_NAME, 1024, 768)
+    
     try:
         while not shutdown_event.is_set():
             is_new, last_frame_id, frame = camera.read_latest(last_frame_id)
@@ -1416,6 +1426,9 @@ def run_camera(args):
                 
             now = time.monotonic()
             h, w = frame.shape[:2]
+            if w < 960:
+                frame = cv2.resize(frame, (960, int(h * 960 / w)), interpolation=cv2.INTER_LINEAR)
+                h, w = frame.shape[:2]
             
             # Non-blocking get of transcript events
             try:
