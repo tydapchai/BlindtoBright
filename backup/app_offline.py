@@ -1325,6 +1325,7 @@ def run_camera(args):
         nonlocal label, confidence, segment_active, sequence, detected, last_hand_at, segment_started_at, latest_landmarks
         last_frame_id = -1
         last_mp_at = 0.0
+        last_mp_timestamp_ms = -1
         mp_interval = 1.0 / max(1.0, args.mediapipe_fps)
         
         while not shutdown_event.is_set():
@@ -1344,11 +1345,18 @@ def run_camera(args):
                 
             rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
             timestamp_ms = int(now * 1000)
+            if timestamp_ms <= last_mp_timestamp_ms:
+                timestamp_ms = last_mp_timestamp_ms + 1
+            last_mp_timestamp_ms = timestamp_ms
             
-            result = detector.detect_for_video(
-                mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb),
-                timestamp_ms
-            )
+            try:
+                result = detector.detect_for_video(
+                    mp.Image(image_format=mp.ImageFormat.SRGB, data=rgb),
+                    timestamp_ms
+                )
+            except Exception as e:
+                logger.warning("MediaPipe detection error: %s", e)
+                result = None
             last_mp_at = now
             
             features = frame_features(result, force_right_hand=not args.no_force_right)
@@ -1586,12 +1594,17 @@ def install_signal_handlers():
 
 
 def main():
+    root_dir = Path(__file__).resolve().parent.parent
+    def _res(preferred, fallback):
+        p = root_dir / preferred
+        return str(p if p.exists() else (root_dir / fallback))
+
     parser = argparse.ArgumentParser(
         description="Low-latency sign-language communication assistant"
     )
-    parser.add_argument("--checkpoint", default="best_bigru_v2.pt")
-    parser.add_argument("--conversation", default="conversation_config.json")
-    parser.add_argument("--hand-model", default="hand_landmarker.task")
+    parser.add_argument("--checkpoint", default=_res("models/best_bigru_v2.pt", "best_bigru_v2.pt"))
+    parser.add_argument("--conversation", default=_res("configs/conversation.json", "conversation_config.json"))
+    parser.add_argument("--hand-model", default=_res("models/hand_landmarker.task", "hand_landmarker.task"))
     parser.add_argument("--camera", default="0")
     parser.add_argument("--language", choices=["vi", "en"], default="vi")
     parser.add_argument("--host", default="0.0.0.0")
