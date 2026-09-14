@@ -230,6 +230,7 @@ def main():
     cap = LatestFrameCamera(source)
     cap.wait_until_connected(args.camera_connect_timeout)
     gemini = GeminiClient(api_keys=args.gemini_key)
+    gemini.preload_cache([v.get("vi", k) for k, v in sentence_map.items()])
 
     # Phát lời chào sẵn sàng qua TTS Gemini
     ready_msg = "Hệ thống Blind to Bright đã sẵn sàng"
@@ -310,11 +311,14 @@ def main():
                     state.add("gesture", sentence)
                     
                     def speak_out():
+                        t0 = time.time()
                         pcm = gemini.generate_speech(sentence)
                         if args.esp_ip and pcm:
                             try:
                                 http_session.post(f"http://{args.esp_ip}/play", data=pcm, timeout=5)
-                            except: pass
+                                print(f"[Speaker] Đã phát ra loa ({time.time() - t0:.3f}s): {sentence}")
+                            except Exception as e:
+                                print(f"[Speaker Error] Gửi âm thanh thất bại: {e}")
                     threading.Thread(target=speak_out).start()
                 else:
                     display_title = "LOI"

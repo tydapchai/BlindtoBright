@@ -5,6 +5,7 @@ import requests
 import wave
 import numpy as np
 import itertools
+import hashlib
 from pathlib import Path
 
 def load_env_file():
@@ -54,7 +55,12 @@ class GeminiClient:
         self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
         
         self.stt_model = "gemini-3.1-flash-lite" 
-        self.tts_model = "gemini-2.5-flash-preview-tts"
+        self.tts_model = "gemini-3.1-flash-tts-preview"
+
+        # Khởi tạo thư mục Cache âm thanh và bộ nhớ RAM cache
+        self.cache_dir = Path(__file__).resolve().parent.parent / "cache" / "audio"
+        self.cache_dir.mkdir(parents=True, exist_ok=True)
+        self._mem_cache = {}
 
     def _get_next_key(self):
         """Lấy key tiếp theo trong vòng xoay và in log để dễ debug"""
@@ -119,7 +125,28 @@ class GeminiClient:
             return ""
 
     def generate_speech(self, text: str) -> bytes:
-        """Sử dụng tính năng Audio Modality của Gemini để sinh giọng đọc (TTS)"""
+        """Sử dụng tính năng Audio Modality của Gemini để sinh giọng đọc (TTS) với Cache siêu tốc (< 1ms)."""
+        clean_text = text.strip() if text else ""
+        if not clean_text:
+            return b""
+
+        # 1. Kiểm tra RAM cache (< 0.0001s)
+        if clean_text in self._mem_cache:
+            return self._mem_cache[clean_text]
+
+        # 2. Kiểm tra Disk cache (< 0.002s)
+        cache_key = hashlib.md5(clean_text.encode("utf-8")).hexdigest()
+        cache_file = self.cache_dir / f"{cache_key}.pcm"
+        if cache_file.is_file():
+            try:
+                pcm_data = cache_file.read_bytes()
+                if len(pcm_data) > 0:
+                    self._mem_cache[clean_text] = pcm_data
+                    return pcm_data
+            except Exception:
+                pass
+
+        # 3. Chưa có trong Cache -> Gọi Cloud API của Gemini
         try:
             for _ in range(len(self.api_keys)):
                 current_key = self._get_next_key()
@@ -129,7 +156,7 @@ class GeminiClient:
                 
                 payload = {
                     "contents": [{
-                        "parts": [{"text": f"Đọc to câu sau bằng tiếng Việt với giọng điệu tự nhiên: {text}"}]
+                        "parts": [{"text": f"Đọc to câu sau bằng tiếng Việt với giọng điệu tự nhiên: {clean_text}"}]
                     }],
                     "generationConfig": {
                         "responseModalities": ["AUDIO"],
@@ -180,7 +207,18 @@ class GeminiClient:
                     
                     # Chuyển thành Stereo (L+R)
                     stereo_array = np.column_stack((resampled, resampled)).flatten()
-                    return stereo_array.tobytes()
+                    pcm_result = stereo_array.tobytes()
+
+                    # Lưu vào RAM và Disk cache cho mọi lần sau phát tức thì
+                    self._mem_cache[clean_text] = pcm_result
+                    try:
+                        cache_file.write_bytes(pcm_result)
+                        meta_file = self.cache_dir / f"{cache_key}.txt"
+                        meta_file.write_text(clean_text, encoding="utf-8")
+                    except Exception:
+                        pass
+
+                    return pcm_result
 
                 except (KeyError, IndexError):
                      print("[Gemini TTS Error] Cấu trúc phản hồi JSON không đúng.")
@@ -192,3 +230,30 @@ class GeminiClient:
         except Exception as e:
             print(f"[Gemini TTS Error] Lỗi hệ thống: {e}")
             return b""
+
+    def preload_cache(self, texts: list):
+        """Khởi động và nạp sẵn cache cho danh sách câu để phát ra loa tức thì (0ms latency)."""
+        loaded = 0
+        missing = []
+        for text in texts:
+            clean = text.strip() if text else ""
+            if not clean:
+                continue
+            cache_key = hashlib.md5(clean.encode("utf-8")).hexdigest()
+            cache_file = self.cache_dir / f"{cache_key}.pcm"
+            if cache_file.is_file():
+                try:
+                    self._mem_cache[clean] = cache_file.read_bytes()
+                    loaded += 1
+                except Exception:
+                    missing.append(clean)
+            else:
+                missing.append(clean)
+
+        if loaded > 0:
+            print(f"[Audio Cache] Đã nạp sẵn {loaded} câu âm thanh từ cache ổ đĩa vào RAM.")
+
+        if missing:
+            print(f"[Audio Cache] Còn {len(missing)} câu chưa cache, đang sinh trước qua Gemini...")
+            for t in missing:
+                self.generate_speech(t)
