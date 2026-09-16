@@ -53,7 +53,7 @@ class GeminiClient:
             self.key_pool = itertools.cycle(self.api_keys)
 
         self.base_url = "https://generativelanguage.googleapis.com/v1beta/models"
-        
+        self.llm_model = "gemini-3.5-flash"
         self.stt_model = "gemini-3.1-flash-lite" 
         self.tts_model = "gemini-3.1-flash-tts-preview"
 
@@ -61,6 +61,46 @@ class GeminiClient:
         self.cache_dir = Path(__file__).resolve().parent.parent / "cache" / "audio"
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._mem_cache = {}
+
+    def rewrite_signs(self, input_words: list[str]) -> str:
+        """Chuyển chuỗi gloss thành câu tiếng Việt tự nhiên, có fallback an toàn."""
+        words = [str(word).strip() for word in input_words if str(word).strip()]
+        if not words:
+            return ""
+
+        fallback = " ".join(words).capitalize() + "."
+        if not self.api_keys:
+            return fallback
+
+        prompt = (
+            "Bạn là bộ hiệu chỉnh câu tiếng Việt từ ngôn ngữ ký hiệu. "
+            "Chỉ được dùng các từ hoặc cụm từ trong danh sách đầu vào, "
+            "được đổi thứ tự và thêm dấu câu, không được thêm ý nghĩa mới. "
+            "Chỉ trả về một câu tiếng Việt, không giải thích.\n"
+            f"Danh sách từ: {words}"
+        )
+
+        try:
+            for _ in range(len(self.api_keys)):
+                current_key = self._get_next_key()
+                url = f"{self.base_url}/{self.llm_model}:generateContent?key={current_key}"
+                payload = {
+                    "contents": [{"parts": [{"text": prompt}]}],
+                    "generationConfig": {"temperature": 0.1},
+                }
+                response = requests.post(url, json=payload, timeout=15.0)
+                if response.status_code == 429:
+                    print("[Gemini LLM Warning] Key bị quá tải. Đang chuyển key...")
+                    continue
+                if response.status_code != 200:
+                    print(f"[Gemini LLM Error] {response.status_code}: {response.text}")
+                    return fallback
+                data = response.json()
+                text = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                return text or fallback
+        except Exception as error:
+            print(f"[Gemini LLM Error] Lỗi hệ thống: {error}")
+        return fallback
 
     def _get_next_key(self):
         """Lấy key tiếp theo trong vòng xoay và in log để dễ debug"""
