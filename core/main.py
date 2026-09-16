@@ -170,9 +170,12 @@ def main():
     detector = vision.HandLandmarker.create_from_options(options)
 
     # =========================================================================
-    # LOGIC AUTO-DISCOVER ESP32 IP
+    # CẤU HÌNH IP ESP32 (ƯU TIÊN CLI -> FILE CONFIG configs/esp_ip.txt)
     # =========================================================================
+    config_ip_file = ROOT_DIR / "configs" / "esp_ip.txt"
     esp_ip = getattr(args, "esp_ip", None)
+
+    # Nếu người dùng truyền URL trực tiếp trong --camera
     if not esp_ip and isinstance(args.camera, str) and args.camera.startswith("http"):
         from urllib.parse import urlparse as _urlparse
         try:
@@ -180,49 +183,40 @@ def main():
         except Exception:
             pass
 
-    def resolve_esp_ip(target_ip):
-        if target_ip:
-            try:
-                r = http_session.get(f"http://{target_ip}/status", timeout=0.6)
-                if r.status_code == 200 and "Blind to Bright" in r.text:
-                    return target_ip
-            except Exception:
-                print(f"[Auto-Discover] IP '{target_ip}' không phản hồi, đang quét mạng LAN...")
-
+    # Nếu chưa có, đọc từ file cấu hình configs/esp_ip.txt
+    if not esp_ip and config_ip_file.is_file():
         try:
-            out = subprocess.check_output("arp -a", shell=True, text=True)
-            for line in out.splitlines():
-                parts = line.split()
-                if len(parts) >= 2 and parts[0].count(".") == 3:
-                    cand = parts[0]
-                    if cand == target_ip:
-                        continue
-                    try:
-                        r = http_session.get(f"http://{cand}/status", timeout=0.3)
-                        if r.status_code == 200 and "Blind to Bright" in r.text:
-                            print(f"[Auto-Discover] Đã tìm thấy ESP32 tại IP mới: {cand}")
-                            return cand
-                    except Exception:
-                        pass
-        except Exception as e:
-            print(f"[Auto-Discover] Lỗi quét ARP: {e}")
+            cached = config_ip_file.read_text(encoding="utf-8").strip()
+            if cached:
+                esp_ip = cached
+        except Exception:
+            pass
 
-        return target_ip
+    # Mặc định dự phòng nếu chưa có cấu hình
+    if not esp_ip:
+        esp_ip = "10.3.79.128"
 
-    resolved_ip = resolve_esp_ip(esp_ip)
-    if resolved_ip:
-        esp_ip = resolved_ip
-        args.esp_ip = resolved_ip
-        if str(args.camera).lower() in ["esp", "esp32", "cam"]:
-            args.camera = f"http://{esp_ip}:81/stream"
-            print(f"[Camera] Đang sử dụng Camera ESP32: {args.camera}")
-        elif isinstance(args.camera, str) and args.camera.startswith("http"):
-            args.camera = f"http://{esp_ip}:81/stream"
-            print(f"[Camera] Đang sử dụng luồng: {args.camera}")
+    # Lưu lại IP để các lần sau không cần nhập lại
+    try:
+        config_ip_file.parent.mkdir(parents=True, exist_ok=True)
+        config_ip_file.write_text(esp_ip, encoding="utf-8")
+    except Exception:
+        pass
+
+    args.esp_ip = esp_ip
+
+    # Thiết lập nguồn camera
+    if str(args.camera).lower() in ["esp", "esp32", "cam"]:
+        args.camera = f"http://{esp_ip}:81/stream"
+        print(f"[Camera] Đang sử dụng Camera ESP32: {args.camera}")
+        print(f"[ESP32] IP điều khiển (Loa / Mic / OLED): {esp_ip}")
+    elif isinstance(args.camera, str) and args.camera.startswith("http"):
+        print(f"[Camera] Đang sử dụng luồng: {args.camera}")
+        print(f"[ESP32] IP điều khiển: {esp_ip}")
     else:
-        if str(args.camera).lower() in ["esp", "esp32", "cam"]:
-            print("[Camera Warning] Không tìm thấy ESP32 trên mạng, chuyển về Webcam laptop (0)")
-            args.camera = "0"
+        print(f"[Camera] Đang sử dụng Webcam máy tính: {args.camera}")
+        if esp_ip:
+            print(f"[ESP32] IP kết nối phụ trợ (Loa / Mic / OLED): {esp_ip}")
     # =========================================================================
 
     # Khởi tạo Camera và Gemini 
