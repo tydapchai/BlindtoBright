@@ -67,7 +67,7 @@ def main():
     parser.add_argument("--checkpoint", default=str(ROOT_DIR / "models" / "best_vsl_model.pth"))
     parser.add_argument(
         "--labels",
-        default=str(ROOT_DIR.parent / "VSL_pipeline" / "modules" / "label_map_472.json"),
+        default=str(ROOT_DIR.parent / "core_v1.1/label_map_472.json"),
     )
     parser.add_argument("--camera", default="0")
     parser.add_argument("--esp-ip", default=None)
