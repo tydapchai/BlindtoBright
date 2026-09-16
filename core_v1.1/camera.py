@@ -13,48 +13,89 @@ class LatestFrameCamera:
         self.frame_id = 0
         self.lock = threading.Lock()
         self.stop_event = threading.Event()
+        self.connected_event = threading.Event()
         self.session = requests.Session()
         self.session.trust_env = False
-        self.thread = threading.Thread(target=self._capture, daemon=True)
+        self.thread = threading.Thread(target=self._capture, name="camera-capture", daemon=True)
         self.thread.start()
 
     def _capture(self):
         if isinstance(self.source, str) and self.source.startswith("http"):
+            print(f"[Camera] Đang kết nối tới luồng: {self.source} ...")
             while not self.stop_event.is_set():
                 try:
                     response = self.session.get(self.source, stream=True, timeout=5)
-                    data = b""
-                    for chunk in response.iter_content(chunk_size=4096):
-                        if self.stop_event.is_set():
+                    if response.status_code != 200:
+                        self.connected_event.clear()
+                        print(f"[Camera Cảnh báo] HTTP {response.status_code}, thử lại sau 1s...")
+                        time.sleep(1.0)
+                        continue
+                    
+                    print(f"[Camera] Kết nối thành công tới {self.source}!")
+                    self.connected_event.set()
+                    data = bytearray()
+                    raw_stream = response.raw
+                    while not self.stop_event.is_set():
+                        chunk = raw_stream.read(4096)
+                        if not chunk:
                             break
-                        data += chunk
-                        start = data.find(b"\xff\xd8")
-                        end = data.find(b"\xff\xd9", start + 2)
-                        if start >= 0 and end >= 0:
-                            image = cv2.imdecode(
-                                np.frombuffer(data[start:end + 2], dtype=np.uint8),
-                                cv2.IMREAD_COLOR,
-                            )
-                            data = data[end + 2:]
-                            if image is not None:
-                                with self.lock:
-                                    self.frame = image
-                                    self.frame_id += 1
+                        data.extend(chunk)
+
+                        # Lấy khung hình mới nhất (rfind) để tránh trễ tích lũy
+                        b = data.rfind(b"\xff\xd9")
+                        if b != -1:
+                            a = data.rfind(b"\xff\xd8", 0, b)
+                            if a != -1:
+                                jpg = data[a:b+2]
+                                data = data[b+2:]
+                                if len(jpg) > 100:
+                                    image = cv2.imdecode(
+                                        np.frombuffer(jpg, dtype=np.uint8),
+                                        cv2.IMREAD_COLOR,
+                                    )
+                                    if image is not None:
+                                        with self.lock:
+                                            self.frame = image
+                                            self.frame_id += 1
+
+                        if len(data) > 65536:
+                            data = data[-16384:]
                     response.close()
-                except requests.RequestException:
-                    time.sleep(0.5)
+                except requests.RequestException as error:
+                    self.connected_event.clear()
+                    print(f"[Camera Cảnh báo] Mất kết nối ({error}), đang thử kết nối lại...")
+                    time.sleep(1.0)
+                except Exception as error:
+                    self.connected_event.clear()
+                    print(f"[Camera Lỗi] {error}, đang thử lại...")
+                    time.sleep(1.0)
             return
 
+        print(f"[Camera] Đang mở nguồn webcam/video: {self.source} ...")
         capture = cv2.VideoCapture(self.source)
+        if capture.isOpened():
+            self.connected_event.set()
+            print(f"[Camera] Đã mở Webcam thành công!")
+        else:
+            print(f"[Camera Lỗi] Không mở được nguồn webcam: {self.source}")
+
         while not self.stop_event.is_set():
             ok, image = capture.read()
             if ok and image is not None:
+                self.connected_event.set()
                 with self.lock:
                     self.frame = image
                     self.frame_id += 1
             else:
+                self.connected_event.clear()
                 time.sleep(0.01)
         capture.release()
+
+    def wait_until_connected(self, timeout=5.0):
+        return self.connected_event.wait(timeout)
+
+    def is_connected(self):
+        return self.connected_event.is_set()
 
     def read_latest(self, last_id):
         with self.lock:
