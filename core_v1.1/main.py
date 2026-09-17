@@ -35,7 +35,7 @@ if str(ROOT_DIR / "core") not in sys.path:
 from camera import LatestFrameCamera
 from decoder import TemporalDecoder
 from gemini_api import GeminiClient
-from preprocess import build_tensor, extract_landmarks, motion_energy, new_buffer
+from preprocess import build_tensor, extract_standard_landmarks, motion_energy, new_buffer
 from stgcn_model import load_stgcn_checkpoint
 
 # Tải font Arial với kích cỡ chuẩn cho canvas 960x720
@@ -582,7 +582,7 @@ def main():
             if is_new:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                 results = detector.process(rgb)
-                landmarks = extract_landmarks(results)
+                landmarks = extract_standard_landmarks(results)
 
                 # Tính toán mức độ vận động
                 if previous_landmarks is None:

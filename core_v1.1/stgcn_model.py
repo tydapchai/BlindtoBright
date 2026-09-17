@@ -31,7 +31,7 @@ class STGCNBlock(nn.Module):
 
 
 class STGCNTransformer(nn.Module):
-    def __init__(self, num_classes, in_channels=9, num_nodes=76, d_model=256,
+    def __init__(self, num_classes, in_channels=9, num_nodes=76, d_model=128,
                  num_heads=8, num_layers=4, dropout=0.1):
         super().__init__()
         self.stgcn = nn.Sequential(

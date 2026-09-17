@@ -9,6 +9,16 @@ NUM_NODES = 76
 
 
 def extract_landmarks(results):
+    """Trích xuất 76 node theo cùng thứ tự với pipeline VSL."""
+    return extract_standard_landmarks(results)
+
+
+def extract_standard_landmarks(results):
+    """
+    Trích xuất 76 điểm (33 pose, 21 tay trái, 21 tay phải và 1 cổ).
+
+    Thứ tự node này phải giữ nguyên vì checkpoint được train với layout này.
+    """
     landmarks = np.zeros((NUM_NODES, 3), dtype=np.float32)
     if results.pose_landmarks:
         for index in range(33):
@@ -83,6 +93,37 @@ def resample_sequence(sequence, target_len=SEQUENCE_LENGTH):
     return resampled.reshape(target_len, num_nodes, num_coords)
 
 
+def normalize_scale_and_coords(data):
+    """Đưa cổ về gốc và chuẩn hóa kích thước theo khoảng cách hai vai."""
+    normalized = np.asarray(data, dtype=np.float32).copy()
+    normalized -= normalized[:, 75:76, :]
+
+    left_shoulder = normalized[:, 11:12, :]
+    right_shoulder = normalized[:, 12:13, :]
+    shoulder_width = np.linalg.norm(
+        left_shoulder - right_shoulder, axis=-1, keepdims=True
+    )
+    shoulder_width = np.where(shoulder_width < 1e-5, 1.0, shoulder_width)
+    return normalized / shoulder_width
+
+
+def build_9_channel_tensor(data):
+    """Đóng gói tọa độ, vận tốc và gia tốc thành tensor ``(9, T, 76)``."""
+    data = np.asarray(data, dtype=np.float32)
+    velocity = np.zeros_like(data)
+    if len(data) > 1:
+        velocity[1:] = data[1:] - data[:-1]
+        velocity[0] = velocity[1]
+
+    acceleration = np.zeros_like(velocity)
+    if len(velocity) > 1:
+        acceleration[1:] = velocity[1:] - velocity[:-1]
+        acceleration[0] = acceleration[1]
+
+    combined = np.concatenate([data, velocity, acceleration], axis=-1)
+    return torch.from_numpy(combined).permute(2, 0, 1)
+
+
 def build_tensor(frame_buffer, device):
     """
     Chuyển đổi chuỗi frames thành tensor 9 kênh (Tọa độ, Vận tốc, Gia tốc) với shape (1, 9, 48, 76).
@@ -92,19 +133,8 @@ def build_tensor(frame_buffer, device):
     if data.shape[0] != SEQUENCE_LENGTH:
         data = resample_sequence(data, target_len=SEQUENCE_LENGTH)
 
-    data = impute_missing_landmarks(data)
-    data = data - data[:, 75:76, :]
-
-    velocity = np.zeros_like(data)
-    velocity[1:] = data[1:] - data[:-1]
-    velocity[0] = velocity[1]
-
-    acceleration = np.zeros_like(velocity)
-    acceleration[1:] = velocity[1:] - velocity[:-1]
-    acceleration[0] = acceleration[1]
-
-    combined = np.concatenate([data, velocity, acceleration], axis=-1)
-    tensor = torch.from_numpy(combined).permute(2, 0, 1).unsqueeze(0)
+    data = normalize_scale_and_coords(data)
+    tensor = build_9_channel_tensor(data).unsqueeze(0)
     return tensor.to(device)
 
 
