@@ -21,10 +21,23 @@ Khi decoder ket thuc mot cau, chuoi gloss duoc gui qua Gemini LLM de sap xep lai
 
 Nhan `SPACE` de bat/tat nhan dien va `Q` de thoat. `--stride 4` chay inference moi 4 frame; giam xuong `1` neu may du manh, tang len neu CPU qua tai.
 
-## Kiem tra model
+## Kiem tra model va cong cu ho tro
 
+- **Kiem tra luong frame camera ESP32 (FPS, bang thong, do tre, chup anh):**
 ```powershell
-python BlindtoBright/core_v1.1/verify_model.py
+python core_v1.1/test_esp_frame.py
+# Hoac chi dinh ro IP:
+python core_v1.1/test_esp_frame.py --ip 192.168.1.50
 ```
 
-Checkpoint mac dinh la `BlindtoBright/models/best_vsl_model.pth`. File nhan mac dinh duoc doc tu `VSL_pipeline/modules/label_map_472.json`.
+- **Kiem tra do chinh xac tung tu (Debug Word):**
+```powershell
+python core_v1.1/debug_word.py --camera esp
+```
+
+- **Kiem tra checkpoint model:**
+```powershell
+python core_v1.1/verify_model.py
+```
+
+Checkpoint mac dinh la `models/best_vsl_model.pth`. File nhan mac dinh duoc doc tu `VSL_pipeline/modules/label_map_472.json` hoac `core_v1.1/label_map_472.json`.

@@ -75,6 +75,7 @@ def draw_status(
     hand_ok=False,
     top3_list=None,
     signing_len=0,
+    target_frames=48,
 ):
     height, width = display.shape[:2]  # Canvas 720 x 960
     top_bar_height = 42
@@ -88,6 +89,9 @@ def draw_status(
 
     if signing_len > 0:
         status_color = (0, 215, 255)  # Vàng cam khi đang thu nhận cử chỉ
+        # Vẽ thanh tiến trình thu nhận 48 frame ngay dưới top bar
+        pct = min(1.0, signing_len / max(1, target_frames))
+        cv2.rectangle(display, (0, top_bar_height - 4), (int(width * pct), top_bar_height), (0, 215, 255), -1)
     elif active:
         status_color = (0, 255, 0)    # Xanh lá khi sẵn sàng
     else:
@@ -103,7 +107,7 @@ def draw_status(
 
         # Cột 1: Chế độ nhận diện
         if signing_len > 0:
-            mode_str = f"ĐANG THU NHẬN ({signing_len}f)"
+            mode_str = f"ĐANG BẮT ({signing_len}/{target_frames}f)"
             mode_color = (255, 215, 0)
         elif active:
             mode_str = "SẴN SÀNG"
@@ -115,8 +119,9 @@ def draw_status(
 
         # Cột 2: HUD Dự đoán thời gian thực & Cảm biến tay
         if signing_len > 0:
-            hud_str = "Đang làm cử chỉ... Dừng/hạ tay để chốt từ"
-            draw.text((230, 11), hud_str, font=FONT_HINT, fill=(255, 230, 100))
+            pct_int = int((signing_len / max(1, target_frames)) * 100)
+            hud_str = f"Đang bắt cử chỉ: {signing_len}/{target_frames} frames ({pct_int}%)..."
+            draw.text((220, 11), hud_str, font=FONT_HINT, fill=(255, 230, 100))
         elif top3_list and len(top3_list) >= 2 and active:
             w1, c1 = top3_list[0]
             w2, c2 = top3_list[1]
@@ -272,11 +277,8 @@ def main():
     parser.add_argument("--device", default=None, choices=["cpu", "cuda"])
     parser.add_argument("--conf", "--confidence", type=float, default=0.30, help="Ngưỡng độ tin cậy nhận diện từ (0.1 - 1.0, mặc định 0.30)")
     parser.add_argument("--margin", type=float, default=0.08, help="Ngưỡng chênh lệch giữa Top-1 và Top-2 để chấp nhận từ (mặc định 0.08)")
-    parser.add_argument("--min-frames", type=int, default=10, help="Số frame tối thiểu cho 1 cử chỉ hợp lệ (mặc định 10)")
-    parser.add_argument("--max-frames", type=int, default=50, help="Số frame tối đa cho 1 cử chỉ (mặc định 50)")
-    parser.add_argument("--idle-stop", type=int, default=3, help="Số frame dừng/hạ tay để chốt cử chỉ (mặc định 3)")
+    parser.add_argument("--frames", type=int, default=48, help="Số frame bắt cho mỗi cử chỉ (mặc định đúng 48 frame)")
     parser.add_argument("--motion-start", type=float, default=0.008, help="Ngưỡng vận động bắt đầu cử chỉ (mặc định 0.008)")
-    parser.add_argument("--motion-stop", type=float, default=0.007, help="Ngưỡng vận động dừng cử chỉ (mặc định 0.007)")
     parser.add_argument("--pause-on-start", action="store_true", help="Bắt đầu ở trạng thái tạm dừng thay vì tự động nhận diện")
     args = parser.parse_args()
 
@@ -329,6 +331,28 @@ def main():
         print(f"[Model] Checkpoint val_acc={checkpoint['val_acc']:.4f}")
 
     source = int(args.camera) if str(args.camera).isdigit() else args.camera
+
+    # TỰ ĐỘNG FALLBACK VỀ WEBCAM LAPTOP (Camera 0) NẾU CAMERA ESP32 KHÔNG TRẢ LỜI
+    if isinstance(source, str) and source.startswith("http"):
+        print(f"[Camera] Đang kiểm tra luồng Camera ESP32: {source} ...")
+        esp_cam_ok = False
+        try:
+            test_session = requests.Session()
+            test_session.trust_env = False
+            r = test_session.get(source, stream=True, timeout=1.8)
+            if r.status_code == 200:
+                esp_cam_ok = True
+            r.close()
+        except Exception:
+            esp_cam_ok = False
+
+        if not esp_cam_ok:
+            print("\n" + "=" * 70)
+            print("  [Camera Fallback] KHÔNG TÌM THẤY CAMERA ESP32!")
+            print("  -> TỰ ĐỘNG CHUYỂN SANG DÙNG WEBCAM LAPTOP (Camera 0) ĐỂ TEST")
+            print("=" * 70 + "\n")
+            source = 0
+
     camera = LatestFrameCamera(source)
 
     # Kích thước Canvas chuẩn 960x720 để đảm bảo giao diện luôn rộng rãi, sắc nét và không bao giờ bị tràn chữ
@@ -442,10 +466,34 @@ def main():
 
     system_ready_printed = False
 
+    camera_connect_start = time.time()
+    camera_fallback_done = (source == 0)
+
     try:
         while True:
             is_new, last_frame_id, frame = camera.read_latest(last_frame_id)
             if frame is None:
+                # Nếu đang thử luồng HTTP ESP32 nhưng sau 2.5 giây không có khung hình -> Fallback về Webcam Laptop (0)
+                if (
+                    not camera_fallback_done
+                    and isinstance(source, str)
+                    and source.startswith("http")
+                    and (time.time() - camera_connect_start > 2.5)
+                ):
+                    camera_fallback_done = True
+                    print("\n" + "=" * 70)
+                    print("  [Camera Fallback] Camera ESP32 không phản hồi khung hình (Timeout 2.5s)!")
+                    print("  -> TỰ ĐỘNG CHUYỂN SANG DÙNG WEBCAM LAPTOP (Camera 0) ĐỂ TIẾP TỤC...")
+                    print("=" * 70 + "\n")
+                    try:
+                        camera.release()
+                    except Exception:
+                        pass
+                    source = 0
+                    camera = LatestFrameCamera(0)
+                    time.sleep(0.5)
+                    continue
+
                 splash = np.zeros((CANVAS_HEIGHT, CANVAS_WIDTH, 3), dtype=np.uint8)
                 cv2.putText(splash, "BlindtoBright ST-GCN v1.1", (100, 300),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 215, 255), 2)
@@ -466,11 +514,11 @@ def main():
                 print("  [BlindtoBright v1.1] HỆ THỐNG ĐÃ KHỞI ĐỘNG XONG & SẴN SÀNG!")
                 print(f"  - Nguồn Camera: {source}")
                 print(f"  - Cửa sổ hiển thị: '{WINDOW_NAME}' (960x720)")
-                print(f"  - Nhận diện ban đầu: {'BẬT (đang nhận)' if recognition_enabled else 'TẮT (SPACE để bật)'}")
+                print(f"  - Chế độ bắt cử chỉ: ĐÚNG {args.frames} FRAMES / MỖI CỬ CHỈ (khớp 100% mô hình)")
                 print(f"  - Ngưỡng tin cậy từ: {args.conf * 100:.0f}% (Margin: {args.margin * 100:.0f}%)")
                 print("  " + "-" * 66)
                 print("  HƯỚNG DẪN ĐIỀU KHIỂN GHÉP CÂU:")
-                print("  • Nhận diện từ:     Giơ tay làm cử chỉ -> Dừng/hạ tay để tự động chốt từ.")
+                print(f"  • Nhận diện từ:     Giơ tay làm cử chỉ -> Hệ thống tự bắt đủ {args.frames} frame rồi chốt từ.")
                 print("  • Phím [ENTER]:     CHỐT CÂU THỦ CÔNG -> Gửi Gemini LLM dịch & Phát loa ESP32.")
                 print("  • Phím [BACKSPACE]: XÓA TỪ CUỐI CÙNG (nếu nhận diện nhầm).")
                 print("  • Phím [C]:         XÓA TOÀN BỘ CÂU đang ghép để làm lại câu mới.")
@@ -609,76 +657,53 @@ def main():
                 if recognition_enabled:
                     if not is_signing:
                         # 1. TRẠNG THÁI NGHỈ (IDLE): Chờ người dùng giơ tay bắt đầu ký hiệu
-                        # Điều kiện bắt đầu: Tay được nâng lên và có vận động rõ rệt (>= motion_start)
                         if (hand_present or wrist_raised) and current_motion >= args.motion_start:
                             is_signing = True
                             gesture_frames = [landmarks]
-                            signing_idle_count = 0
                     else:
-                        # 2. TRẠNG THÁI THU NHẬN CỬ CHỈ (SIGNING): Thu nhận chuỗi frame trọn vẹn theo cơ chế Dynamic
+                        # 2. TRẠNG THÁI THU NHẬN CỬ CHỈ: Bắt đúng 48 frames chuẩn khớp mô hình
                         gesture_frames.append(landmarks)
 
-                        # Nhận biết người dùng đã dừng hoặc hạ tay:
-                        # - Chuyển động dừng hẳn: current_motion < args.motion_stop (mặc định 0.007)
-                        # - Hoặc tay đã hạ xuống dưới tầm ngực/hông: not wrist_raised
-                        # - Hoặc không còn thấy bàn tay: not hand_present
-                        hand_stopped = (current_motion < args.motion_stop) or (not wrist_raised) or (not hand_present)
-                        if hand_stopped:
-                            signing_idle_count += 1
-                        else:
-                            signing_idle_count = 0
-
-                        # Điều kiện kết thúc cử chỉ:
-                        # - Dừng/hạ tay đủ số frame (idle_stop, mặc định 3 frame) sau khi đã làm >= min_frames (mặc định 10)
-                        # - Hoặc đạt giới hạn an toàn max_frames (mặc định 50 frames ~ 2s)
-                        gesture_finished = (
-                            (signing_idle_count >= args.idle_stop and len(gesture_frames) >= args.min_frames)
-                            or (len(gesture_frames) >= args.max_frames)
-                        )
-
-                        if gesture_finished:
+                        # Khi gom đủ 48 frame (args.frames, mặc định 48)
+                        if len(gesture_frames) >= args.frames:
                             is_signing = False
-                            valid_len = len(gesture_frames) - signing_idle_count if signing_idle_count > 0 else len(gesture_frames)
-                            valid_frames = gesture_frames[:valid_len] if valid_len >= args.min_frames else gesture_frames
+                            valid_frames = gesture_frames[:args.frames]
 
-                            if len(valid_frames) >= args.min_frames:
-                                # Co giãn nội suy về đúng chuẩn 48 frame và đưa vào model
-                                input_tensor = build_tensor(valid_frames, device)
-                                with torch.no_grad():
-                                    logits = model(input_tensor)
-                                    probabilities = torch.softmax(logits, dim=-1)[0].cpu().numpy()
+                            input_tensor = build_tensor(valid_frames, device)
+                            with torch.no_grad():
+                                logits = model(input_tensor)
+                                probabilities = torch.softmax(logits, dim=-1)[0].cpu().numpy()
 
-                                new_word, is_valid, top3 = decoder.decode_segment(probabilities, hand_detected=True)
-                                recent_top3 = top3
-                                top1_w, top1_c = top3[0]
-                                top2_w, top2_c = top3[1] if len(top3) > 1 else ("", 0.0)
-                                margin = top1_c - top2_c
-                                top_prediction = top1_w
-                                top_confidence = top1_c
+                            new_word, is_valid, top3 = decoder.decode_segment(probabilities, hand_detected=True)
+                            recent_top3 = top3
+                            top1_w, top1_c = top3[0]
+                            top2_w, top2_c = top3[1] if len(top3) > 1 else ("", 0.0)
+                            margin = top1_c - top2_c
+                            top_prediction = top1_w
+                            top_confidence = top1_c
 
-                                if is_valid and new_word:
-                                    current_sentence = " ".join(decoder.sentence_buffer)
-                                    active_title = f"ĐÃ THÊM TỪ: {new_word.upper()}"
-                                    active_text = f"Đã nhận '{new_word}' ({top1_c*100:.0f}%) -> Câu: {current_sentence}"
-                                    active_text_time = time.time()
-                                    print(f"[Model] >>> ĐÃ NHẬN DIỆN TỪ: '{new_word}' ({top1_c*100:.1f}% | +{margin*100:.1f}%) [{len(valid_frames)} frames] -> Câu ({len(decoder.sentence_buffer)} từ): {current_sentence}")
-                                    if args.esp_ip:
-                                        try:
-                                            speech_session.post(
-                                                f"http://{args.esp_ip}/oled",
-                                                data=current_sentence.encode("utf-8", errors="ignore"),
-                                                timeout=1,
-                                            )
-                                        except requests.RequestException:
-                                            pass
-                                else:
-                                    active_title = "CHƯA RÕ CỬ CHỈ"
-                                    active_text = f"Cân nhắc: 1.{top1_w} ({top1_c*100:.0f}%) | 2.{top2_w} ({top2_c*100:.0f}%) [Margin: {margin*100:.0f}%]"
-                                    active_text_time = time.time()
-                                    print(f"[Model] Cử chỉ chưa chắc chắn (1. '{top1_w}' {top1_c*100:.1f}% vs 2. '{top2_w}' {top2_c*100:.1f}% | Margin {margin*100:.1f}%) [{len(valid_frames)} frames]. Bỏ qua.")
+                            if is_valid and new_word:
+                                current_sentence = " ".join(decoder.sentence_buffer)
+                                active_title = f"ĐÃ THÊM TỪ: {new_word.upper()}"
+                                active_text = f"Đã nhận '{new_word}' ({top1_c*100:.0f}%) -> Câu: {current_sentence}"
+                                active_text_time = time.time()
+                                print(f"[Model] >>> ĐÃ NHẬN DIỆN TỪ: '{new_word}' ({top1_c*100:.1f}% | +{margin*100:.1f}%) [Đúng {args.frames} frames] -> Câu ({len(decoder.sentence_buffer)} từ): {current_sentence}")
+                                if args.esp_ip:
+                                    try:
+                                        speech_session.post(
+                                            f"http://{args.esp_ip}/oled",
+                                            data=current_sentence.encode("utf-8", errors="ignore"),
+                                            timeout=1,
+                                        )
+                                    except requests.RequestException:
+                                        pass
+                            else:
+                                active_title = "CHƯA RÕ CỬ CHỈ"
+                                active_text = f"Cân nhắc: 1.{top1_w} ({top1_c*100:.0f}%) | 2.{top2_w} ({top2_c*100:.0f}%) [Margin: {margin*100:.0f}%]"
+                                active_text_time = time.time()
+                                print(f"[Model] Cử chỉ chưa chắc chắn (1. '{top1_w}' {top1_c*100:.1f}% vs 2. '{top2_w}' {top2_c*100:.1f}% | Margin {margin*100:.1f}%) [Đúng {args.frames} frames]. Bỏ qua.")
 
                             gesture_frames = []
-                            signing_idle_count = 0
 
                 # Xác định nội dung hiển thị trên banner dưới
                 with llm_lock:
@@ -690,8 +715,9 @@ def main():
                     banner_title = llm_t
                     banner_text = llm_txt
                 elif is_signing:
-                    banner_title = f"ĐANG THU NHẬN CỬ CHỈ ({len(gesture_frames)} frames)"
-                    banner_text = "Đang làm cử chỉ... Dừng/hạ tay sau khi làm xong để hệ thống chốt từ."
+                    pct = int((len(gesture_frames) / max(1, args.frames)) * 100)
+                    banner_title = f"ĐANG BẮT CỬ CHỈ ({len(gesture_frames)}/{args.frames} FRAMES - {pct}%)"
+                    banner_text = f"Đang bắt đủ {args.frames} frame... Giữ chuyển động cử chỉ trước camera."
                 elif active_text and (time.time() - active_text_time < 5.0):
                     banner_title = active_title
                     banner_text = active_text
@@ -749,6 +775,7 @@ def main():
                     hand_ok=hand_detected,
                     top3_list=recent_top3,
                     signing_len=len(gesture_frames) if is_signing else 0,
+                    target_frames=args.frames,
                 )
                 cv2.imshow(WINDOW_NAME, display)
             else:

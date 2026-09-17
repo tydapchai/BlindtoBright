@@ -328,6 +328,27 @@ def main():
         source = args.camera
         print(f"[Camera] Sử dụng luồng: {source}")
 
+    # TỰ ĐỘNG FALLBACK VỀ WEBCAM LAPTOP (Camera 0) NẾU CAMERA ESP32 KHÔNG TRẢ LỜI
+    if isinstance(source, str) and source.startswith("http"):
+        print(f"[Camera] Đang kiểm tra kết nối Camera ESP32: {source} ...")
+        esp_cam_ok = False
+        try:
+            test_session = requests.Session()
+            test_session.trust_env = False
+            r = test_session.get(source, stream=True, timeout=1.8)
+            if r.status_code == 200:
+                esp_cam_ok = True
+            r.close()
+        except Exception:
+            esp_cam_ok = False
+
+        if not esp_cam_ok:
+            print("\n" + "=" * 70)
+            print("  [Camera Fallback] KHÔNG TÌM THẤY CAMERA ESP32!")
+            print("  -> TỰ ĐỘNG CHUYỂN SANG DÙNG WEBCAM LAPTOP (Camera 0) ĐỂ TEST")
+            print("=" * 70 + "\n")
+            source = 0
+
     camera = LatestFrameCamera(source)
 
     print("[System] Đang khởi tạo MediaPipe Holistic...")
@@ -479,10 +500,10 @@ def main():
                         else:
                             auto_idle_count = 0
 
-                        if auto_idle_count >= 4 or len(gesture_frames) >= 75:
+                        if auto_idle_count >= 4 or len(gesture_frames) >= 48:
                             is_recording = False
                             duration = time.time() - record_start_time
-                            valid_frames = gesture_frames[:-auto_idle_count] if auto_idle_count > 0 else gesture_frames
+                            valid_frames = gesture_frames[:48]
                             if len(valid_frames) >= 10:
                                 input_tensor = build_tensor(valid_frames, device)
                                 with torch.no_grad():
