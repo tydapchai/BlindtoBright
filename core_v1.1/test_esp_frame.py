@@ -1,19 +1,20 @@
 """
 =============================================================================
-BLIND TO BRIGHT - ESP32 CAMERA FRAME & PERFORMANCE TESTER
+BLIND TO BRIGHT - ESP32 CAMERA FRAME & PERFORMANCE TESTER (v1.1)
 =============================================================================
 Công cụ chuyên dụng kiểm tra luồng video (stream), đo đạc hiệu năng FPS,
 băng thông mạng, độ trễ và độ ổn định của camera ESP32 (hoặc Webcam Laptop).
 
-Tính năng chính:
-- Tự động dò tìm IP của ESP32 qua Wi-Fi / SoftAP (192.168.4.1) / ARP Scan.
+Giao diện chuẩn hóa cố định trên Canvas 960x720 (đồng bộ hoàn toàn với main.py):
+- Tự động căn chỉnh và phóng to mọi độ phân giải camera (320x240, 640x480, ...)
+  vào khung hình 960x720, giữ nguyên tỉ lệ gốc (không bị méo hay vỡ giao diện).
 - Đo FPS thời gian thực (FPS tức thời, FPS trung bình, FPS trượt 1s).
 - Đo độ trễ giữa các frames (frame interval in ms) & phát hiện khựng hình (lag spikes).
 - Đo băng thông mạng thực tế (Bitrate KB/s, Mbps) và dung lượng trung bình mỗi frame.
 - Đọc thông số phần cứng từ ESP32 (/status): Wi-Fi RSSI, Free Heap, Free PSRAM.
 - Biểu đồ thời gian thực (Sparkline latency graph) hiển thị độ ổn định mạng.
-- Phím tắt tiện ích:
-    [S] : Chụp ảnh lưu khung hình (kèm timestamp) vào thư mục saved_frames/
+- Phím tắt:
+    [S] : Chụp ảnh lưu khung hình gốc + ảnh có HUD vào thư mục saved_frames/
     [P] : Tạm dừng / Tiếp tục xem hình
     [H] : Ẩn / Hiện bảng thông số kỹ thuật (HUD)
     [R] : Đặt lại (Reset) các chỉ số thống kê
@@ -34,6 +35,10 @@ import cv2
 import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 import requests
+
+# Kích thước Canvas chuẩn thống nhất toàn hệ thống Blind to Bright
+CANVAS_WIDTH = 960
+CANVAS_HEIGHT = 720
 
 # Cấu hình Font chữ tiếng Việt hiển thị trên màn hình
 try:
@@ -359,12 +364,12 @@ class FrameStreamWorker:
 
             # Khoảng thời gian frame gần nhất và trung bình
             cur_interval = self.interval_history[-1] if self.interval_history else 0.0
-            avg_interval = np.mean(self.interval_history) if self.interval_history else 0.0
-            min_interval = np.min(self.interval_history) if self.interval_history else 0.0
-            max_interval = np.max(self.interval_history) if self.interval_history else 0.0
+            avg_interval = float(np.mean(self.interval_history)) if self.interval_history else 0.0
+            min_interval = float(np.min(self.interval_history)) if self.interval_history else 0.0
+            max_interval = float(np.max(self.interval_history)) if self.interval_history else 0.0
 
             # Kích thước frame trung bình (KB)
-            avg_kb = np.mean(self.jpeg_size_history) if self.jpeg_size_history else 0.0
+            avg_kb = float(np.mean(self.jpeg_size_history)) if self.jpeg_size_history else 0.0
 
             stats = {
                 "connected": self.is_connected,
@@ -405,24 +410,46 @@ class FrameStreamWorker:
         self.stop_event.set()
 
 
-def draw_sparkline_graph(canvas: np.ndarray, x: int, y: int, w: int, h: int, values: list[float], max_val: float = 100.0):
+def fit_frame_to_canvas(raw_frame: np.ndarray, target_w: int = CANVAS_WIDTH, target_h: int = CANVAS_HEIGHT) -> np.ndarray:
+    """
+    Đặt khung hình camera vào canvas chuẩn 960x720, giữ nguyên tỉ lệ khung hình (Aspect Ratio),
+    tránh hoàn toàn hiện tượng méo ảnh hoặc lệch HUD do kích thước camera quá nhỏ/lớn.
+    """
+    fh, fw = raw_frame.shape[:2]
+    canvas = np.zeros((target_h, target_w, 3), dtype=np.uint8)
+
+    # Tính tỉ lệ phóng to bảo toàn Aspect Ratio
+    scale = min(target_w / fw, target_h / fh)
+    nw = int(fw * scale)
+    nh = int(fh * scale)
+
+    resized = cv2.resize(raw_frame, (nw, nh), interpolation=cv2.INTER_LINEAR)
+
+    # Căn giữa khung hình vào canvas
+    x_offset = (target_w - nw) // 2
+    y_offset = (target_h - nh) // 2
+    canvas[y_offset:y_offset + nh, x_offset:x_offset + nw] = resized
+    return canvas
+
+
+def draw_sparkline_graph(canvas: np.ndarray, x: int, y: int, w: int, h: int, values: list[float], max_val: float = 120.0):
     """Vẽ một biểu đồ sparkline nhỏ biểu thị độ trễ frame trong thời gian thực."""
     if not values or len(values) < 2:
         return
 
     # Khung nền đồ thị bán trong suốt
     overlay = canvas.copy()
-    cv2.rectangle(overlay, (x, y), (x + w, y + h), (20, 24, 30), -1)
+    cv2.rectangle(overlay, (x, y), (x + w, y + h), (18, 22, 30), -1)
     cv2.addWeighted(overlay, 0.7, canvas, 0.3, 0, canvas)
-    cv2.rectangle(canvas, (x, y), (x + w, y + h), (60, 70, 85), 1)
+    cv2.rectangle(canvas, (x, y), (x + w, y + h), (55, 68, 85), 1)
 
     # Đường tham chiếu 33.3ms (~30 FPS) và 66.6ms (~15 FPS)
     y_30fps = int(y + h - (33.3 / max_val) * h)
     y_15fps = int(y + h - (66.6 / max_val) * h)
     if y <= y_30fps <= y + h:
-        cv2.line(canvas, (x, y_30fps), (x + w, y_30fps), (40, 120, 50), 1)
+        cv2.line(canvas, (x, y_30fps), (x + w, y_30fps), (40, 130, 60), 1)
     if y <= y_15fps <= y + h:
-        cv2.line(canvas, (x, y_15fps), (x + w, y_15fps), (50, 50, 130), 1)
+        cv2.line(canvas, (x, y_15fps), (x + w, y_15fps), (60, 60, 150), 1)
 
     # Vẽ các điểm giá trị
     points = []
@@ -439,12 +466,12 @@ def draw_sparkline_graph(canvas: np.ndarray, x: int, y: int, w: int, h: int, val
         pt1 = points[i]
         pt2 = points[i + 1]
         val = values[i + 1]
-        color = (50, 210, 80) if val < 45 else ((60, 180, 240) if val < 90 else (50, 60, 240))
+        color = (50, 215, 80) if val < 45 else ((60, 190, 245) if val < 90 else (50, 60, 245))
         cv2.line(canvas, pt1, pt2, color, 2)
 
 
 def render_hud_overlay(
-    frame: np.ndarray,
+    canvas: np.ndarray,
     stats: dict,
     esp_info: dict,
     is_paused: bool,
@@ -452,47 +479,51 @@ def render_hud_overlay(
     toast_msg: str,
     stream_url: str
 ) -> np.ndarray:
-    """Vẽ giao diện HUD hiển thị đầy đủ thông số kỹ thuật lên trên khung hình."""
-    h, w = frame.shape[:2]
-    canvas = frame.copy()
+    """
+    Vẽ toàn bộ giao diện HUD thông số kỹ thuật lên trên Canvas 960x720 chuẩn.
+    Mọi tọa độ đều được khóa cố định theo kích thước 960x720 nên không bao giờ bị méo chữ hay tràn viền.
+    """
+    w = CANVAS_WIDTH
+    h = CANVAS_HEIGHT
 
-    # 1. Vẽ Notification Toast nổi (nếu có)
+    # 1. Vẽ Notification Toast nổi ở giữa màn hình (nếu có)
     if toast_msg:
-        toast_w, toast_h = 440, 42
+        toast_w, toast_h = 500, 44
         tx = (w - toast_w) // 2
         ty = 25
         overlay = canvas.copy()
         cv2.rectangle(overlay, (tx, ty), (tx + toast_w, ty + toast_h), (20, 20, 20), -1)
         cv2.addWeighted(overlay, 0.85, canvas, 0.15, 0, canvas)
-        cv2.rectangle(canvas, (tx, ty), (tx + toast_w, ty + toast_h), (0, 220, 120), 2)
+        cv2.rectangle(canvas, (tx, ty), (tx + toast_w, ty + toast_h), (0, 225, 130), 2)
 
         pil_img = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
         draw = ImageDraw.Draw(pil_img)
-        draw.text((tx + 20, ty + 10), toast_msg, font=FONT_BOLD, fill=(0, 255, 150))
+        draw.text((tx + 22, ty + 11), toast_msg, font=FONT_BOLD, fill=(0, 255, 160))
         canvas = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
     if not show_hud:
-        cv2.putText(canvas, "[H] Hien HUD", (15, h - 15), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
+        # Nếu ẩn HUD, chỉ hiển thị phím tắt gợi ý nhỏ ở góc dưới
+        cv2.putText(canvas, "[H] Hien HUD thong so", (20, h - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (220, 220, 220), 1)
         return canvas
 
-    # 2. Bảng thông số chính (Top-Left Panel)
-    panel_w = 340
-    panel_h = 295
-    px, py = 15, 15
+    # 2. Bảng thông số chính (Top-Left Panel) - Cố định kích thước chuẩn 360 x 310
+    panel_w = 360
+    panel_h = 310
+    px, py = 20, 20
 
     overlay = canvas.copy()
     cv2.rectangle(overlay, (px, py), (px + panel_w, py + panel_h), (16, 20, 28), -1)
     cv2.addWeighted(overlay, 0.82, canvas, 0.18, 0, canvas)
-    cv2.rectangle(canvas, (px, py), (px + panel_w, py + panel_h), (50, 65, 85), 1)
+    cv2.rectangle(canvas, (px, py), (px + panel_w, py + panel_h), (55, 70, 90), 1)
 
-    # 3. Vẽ biểu đồ Sparkline độ trễ (ở đáy panel)
+    # 3. Vẽ biểu đồ Sparkline độ trễ (ở đáy panel chính)
     chart_x = px + 15
-    chart_y = py + 230
+    chart_y = py + 245
     chart_w = panel_w - 30
-    chart_h = 50
+    chart_h = 52
     draw_sparkline_graph(canvas, chart_x, chart_y, chart_w, chart_h, stats.get("history_intervals", []), max_val=120.0)
 
-    # 4. Vẽ văn bản thông số với Pillow
+    # 4. Vẽ văn bản thông số bằng Pillow
     pil_img = Image.fromarray(cv2.cvtColor(canvas, cv2.COLOR_BGR2RGB))
     draw = ImageDraw.Draw(pil_img)
 
@@ -504,11 +535,11 @@ def render_hud_overlay(
     elif stats["connected"]:
         status_color = (34, 197, 94)    # Xanh lá
         status_dot = "●"
-        status_text = "LIVE STREAM (ESP32)" if "http" in stream_url else "LIVE (WEBCAM 0)"
+        status_text = "LIVE STREAM (ESP32)" if "http" in stream_url else "LIVE (WEBCAM LAPTOP)"
     else:
         status_color = (239, 68, 68)    # Đỏ
         status_dot = "✖"
-        status_text = "MẤT KẾT NỐI"
+        status_text = "MẤT KẾT NỐI CAMERA"
 
     draw.text((px + 14, py + 12), f"{status_dot} {status_text}", font=FONT_TITLE, fill=status_color)
 
@@ -524,69 +555,78 @@ def render_hud_overlay(
         fps_color = (239, 68, 68)       # Đỏ (<15 fps)
         fps_grade = "CHẬM / LAG"
 
-    draw.text((px + 14, py + 40), f"{fps:4.1f}", font=FONT_LARGE, fill=fps_color)
-    draw.text((px + 88, py + 48), f"FPS  ({fps_grade})", font=FONT_BOLD, fill=fps_color)
+    draw.text((px + 14, py + 38), f"{fps:4.1f}", font=FONT_LARGE, fill=fps_color)
+    draw.text((px + 92, py + 46), f"FPS  ({fps_grade})", font=FONT_BOLD, fill=fps_color)
 
-    draw.line([(px + 14, py + 80), (px + panel_w - 14, py + 80)], fill=(60, 75, 95), width=1)
+    # Đường phân cách ngang
+    draw.line([(px + 14, py + 78), (px + panel_w - 14, py + 78)], fill=(60, 75, 95), width=1)
 
-    cur_y = py + 90
-    line_h = 22
+    # Danh sách thông số
+    cur_y = py + 88
+    line_h = 23
 
-    draw.text((px + 14, cur_y), "Độ phân giải:", font=FONT_TEXT, fill=(180, 195, 210))
-    draw.text((px + 140, cur_y), f"{stats['width']} x {stats['height']} px", font=FONT_BOLD, fill=(255, 255, 255))
+    # Độ phân giải phần cứng gốc
+    draw.text((px + 14, cur_y), "Độ phân giải gốc:", font=FONT_TEXT, fill=(180, 195, 210))
+    draw.text((px + 155, cur_y), f"{stats['width']} x {stats['height']} px", font=FONT_BOLD, fill=(255, 255, 255))
     cur_y += line_h
 
+    # Băng thông / Bitrate
     bitrate = stats["bitrate_kbps"]
     bitrate_str = f"{bitrate:.1f} KB/s ({bitrate * 8 / 1024:.2f} Mbps)" if bitrate > 0 else "0 KB/s"
-    draw.text((px + 14, cur_y), "Băng thông:", font=FONT_TEXT, fill=(180, 195, 210))
-    draw.text((px + 140, cur_y), bitrate_str, font=FONT_BOLD, fill=(100, 220, 255))
+    draw.text((px + 14, cur_y), "Băng thông mạng:", font=FONT_TEXT, fill=(180, 195, 210))
+    draw.text((px + 155, cur_y), bitrate_str, font=FONT_BOLD, fill=(100, 220, 255))
     cur_y += line_h
 
-    draw.text((px + 14, cur_y), "Cỡ frame TB:", font=FONT_TEXT, fill=(180, 195, 210))
-    draw.text((px + 140, cur_y), f"{stats['avg_jpeg_kb']:.1f} KB / frame", font=FONT_BOLD, fill=(255, 255, 255))
+    # Kích thước frame trung bình
+    draw.text((px + 14, cur_y), "Cỡ frame JPEG:", font=FONT_TEXT, fill=(180, 195, 210))
+    draw.text((px + 155, cur_y), f"{stats['avg_jpeg_kb']:.1f} KB / frame", font=FONT_BOLD, fill=(255, 255, 255))
     cur_y += line_h
 
+    # Độ trễ frame (Frame Time)
     draw.text((px + 14, cur_y), "Độ trễ frame:", font=FONT_TEXT, fill=(180, 195, 210))
-    draw.text((px + 140, cur_y), f"{stats['cur_interval_ms']:.1f} ms  (TB: {stats['avg_interval_ms']:.1f}ms)", font=FONT_BOLD, fill=(255, 215, 0))
+    draw.text((px + 155, cur_y), f"{stats['cur_interval_ms']:.1f} ms (TB: {stats['avg_interval_ms']:.1f}ms)", font=FONT_BOLD, fill=(255, 215, 0))
     cur_y += line_h
 
+    # Số lần khựng hình / Spikes
     spike_color = (239, 68, 68) if stats["lag_spikes"] > 5 else (200, 200, 200)
     draw.text((px + 14, cur_y), "Khựng (>150ms):", font=FONT_TEXT, fill=(180, 195, 210))
-    draw.text((px + 140, cur_y), f"{stats['lag_spikes']} lần", font=FONT_BOLD, fill=spike_color)
+    draw.text((px + 155, cur_y), f"{stats['lag_spikes']} lần", font=FONT_BOLD, fill=spike_color)
     cur_y += line_h
 
+    # Tiêu đề biểu đồ độ trễ
     draw.text((chart_x, chart_y - 17), "Biểu đồ độ trễ (30 FPS: 33ms | 15 FPS: 66ms):", font=FONT_SMALL, fill=(140, 160, 180))
 
-    # 5. Bảng thông số phần cứng ESP32 (Top-Right Panel)
+    # 5. Bảng thông số phần cứng ESP32 (Top-Right Panel) - Kích thước 280 x 120
     if esp_info and esp_info.get("reachable"):
-        right_w = 260
-        right_h = 115
-        rx = w - right_w - 15
-        ry = 15
+        right_w = 280
+        right_h = 120
+        rx = w - right_w - 20
+        ry = 20
 
-        draw.rectangle([(rx, ry), (rx + right_w, ry + right_h)], fill=(16, 20, 28), outline=(50, 65, 85))
-        draw.text((rx + 12, ry + 10), "ESP32-S3 TRẠNG THÁI", font=FONT_BOLD, fill=(0, 200, 255))
+        draw.rectangle([(rx, ry), (rx + right_w, ry + right_h)], fill=(16, 20, 28), outline=(55, 70, 90))
+        draw.text((rx + 14, ry + 10), "ESP32-S3 THÔNG SỐ", font=FONT_BOLD, fill=(0, 200, 255))
 
         rssi = esp_info.get("rssi")
         rssi_str = f"{rssi} dBm" if rssi is not None else "N/A"
+        rssi_grade = " (Mạnh)" if rssi and rssi > -65 else (" (Ổn định)" if rssi and rssi > -80 else " (Yếu)")
         rssi_color = (34, 197, 94) if rssi and rssi > -65 else ((234, 179, 8) if rssi and rssi > -80 else (239, 68, 68))
-        draw.text((rx + 12, ry + 36), f"Wi-Fi RSSI:  {rssi_str}", font=FONT_TEXT, fill=rssi_color)
+        draw.text((rx + 14, ry + 36), f"Wi-Fi RSSI:  {rssi_str}{rssi_grade}", font=FONT_TEXT, fill=rssi_color)
 
         heap = esp_info.get("free_heap")
-        draw.text((rx + 12, ry + 58), f"Free Heap:  {heap} B" if heap else "Free Heap: N/A", font=FONT_SMALL, fill=(180, 190, 200))
+        draw.text((rx + 14, ry + 62), f"Free Heap:   {heap} bytes" if heap else "Free Heap: N/A", font=FONT_SMALL, fill=(185, 195, 205))
 
         psram = esp_info.get("free_psram")
-        draw.text((rx + 12, ry + 78), f"Free PSRAM: {psram} B" if psram else "Free PSRAM: N/A", font=FONT_SMALL, fill=(180, 190, 200))
+        draw.text((rx + 14, ry + 86), f"Free PSRAM:  {psram} bytes" if psram else "Free PSRAM: N/A", font=FONT_SMALL, fill=(185, 195, 205))
 
-    # 6. Thanh hướng dẫn phím tắt ở cạnh dưới cùng
-    bar_h = 32
+    # 6. Thanh hướng dẫn phím tắt ở cạnh dưới cùng Canvas (960 x 36)
+    bar_h = 36
     by = h - bar_h
     draw.rectangle([(0, by), (w, h)], fill=(10, 12, 16))
     hint_text = "[S] Chụp frame  |  [P] Tạm dừng  |  [H] Ẩn/Hiện HUD  |  [R] Reset thống kê  |  [Q] Thoát"
-    draw.text((15, by + 7), hint_text, font=FONT_HINT, fill=(220, 225, 230))
+    draw.text((18, by + 8), hint_text, font=FONT_HINT, fill=(225, 230, 235))
 
     total_txt = f"Tổng: {stats['total_frames']} frames | {stats['total_mb']:.2f} MB | {stats['uptime']:.0f}s"
-    draw.text((w - 280, by + 7), total_txt, font=FONT_HINT, fill=(140, 160, 180))
+    draw.text((w - 290, by + 8), total_txt, font=FONT_HINT, fill=(140, 160, 185))
 
     return cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
@@ -598,7 +638,8 @@ def print_summary_report(stats: dict, esp_info: dict, stream_source: str):
     print("=" * 68)
     print(f"  - Nguồn Stream       : {stream_source}")
     print(f"  - Thời gian kiểm tra : {stats['uptime']:.1f} giây")
-    print(f"  - Độ phân giải       : {stats['width']} x {stats['height']} pixels")
+    print(f"  - Độ phân giải gốc   : {stats['width']} x {stats['height']} pixels")
+    print(f"  - Canvas hiển thị    : {CANVAS_WIDTH} x {CANVAS_HEIGHT} pixels")
     print(f"  - Tổng khung hình    : {stats['total_frames']} frames")
     print(f"  - FPS trung bình     : {stats['avg_fps']:.2f} FPS")
     print(f"  - Độ trễ frame TB    : {stats['avg_interval_ms']:.2f} ms")
@@ -608,7 +649,7 @@ def print_summary_report(stats: dict, esp_info: dict, stream_source: str):
     print(f"  - Tổng dung lượng tải: {stats['total_mb']:.2f} MB")
 
     if esp_info and esp_info.get("reachable"):
-        print("  - Thông số ESP32:")
+        print("  - Thông số phần cứng ESP32:")
         print(f"      + Wi-Fi RSSI    : {esp_info.get('rssi')} dBm")
         print(f"      + Free Heap     : {esp_info.get('free_heap')} bytes")
         print(f"      + Free PSRAM    : {esp_info.get('free_psram')} bytes")
@@ -705,21 +746,22 @@ def main():
     if not first_frame_ok:
         print("[Cảnh báo] Chưa nhận được frame sau 5s! Kiểm tra lại kết nối mạng hoặc nguồn camera.")
 
+    # Thiết lập cửa sổ với kích thước canvas chuẩn 960x720
     window_name = "Blind to Bright - ESP32 Camera Frame Tester"
     cv2.namedWindow(window_name, cv2.WINDOW_NORMAL)
-    cv2.resizeWindow(window_name, 960, 720)
+    cv2.resizeWindow(window_name, CANVAS_WIDTH, CANVAS_HEIGHT)
 
     is_paused = False
     show_hud = not args.no_hud
     toast_msg = ""
     toast_expire_time = 0.0
-    last_frame = None
+    last_raw_frame = None
 
     print("\n[Điều khiển]:")
     print("  - [S] : Chụp và lưu ảnh vào thư mục 'saved_frames'")
-    print("  - [P] : Tạm dừng (Pause/Resume)")
+    print("  - [P] : Tạm dừng / Tiếp tục (Pause/Resume)")
     print("  - [H] : Ẩn / Hiện bảng thông số HUD")
-    print("  - [R] : Reset lại thống kê")
+    print("  - [R] : Reset lại toàn bộ thống kê")
     print("  - [Q] / [ESC] : Thoát chương trình và in bảng tổng kết\n")
 
     try:
@@ -727,16 +769,20 @@ def main():
             if not is_paused:
                 frame, stats = worker.get_latest()
                 if frame is not None:
-                    last_frame = frame
+                    last_raw_frame = frame
             else:
                 _, stats = worker.get_latest()
 
             if toast_msg and time.time() > toast_expire_time:
                 toast_msg = ""
 
-            if last_frame is not None:
+            if last_raw_frame is not None:
+                # 1. Căn chỉnh khung hình vào Canvas chuẩn 960x720 giữ nguyên tỉ lệ
+                canvas = fit_frame_to_canvas(last_raw_frame, CANVAS_WIDTH, CANVAS_HEIGHT)
+
+                # 2. Vẽ bảng thông số HUD lên Canvas
                 display = render_hud_overlay(
-                    frame=last_frame,
+                    canvas=canvas,
                     stats=stats,
                     esp_info=esp_info,
                     is_paused=is_paused,
@@ -746,41 +792,56 @@ def main():
                 )
                 cv2.imshow(window_name, display)
             else:
-                blank = np.zeros((480, 640, 3), dtype=np.uint8)
-                cv2.putText(blank, "DANG KET NOI TOI ESP32...", (120, 240), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 200, 255), 2)
+                blank = np.zeros((CANVAS_HEIGHT, CANVAS_WIDTH, 3), dtype=np.uint8)
+                cv2.putText(blank, "DANG KET NOI TOI CAMERA...", (CANVAS_WIDTH // 2 - 200, CANVAS_HEIGHT // 2),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 215, 255), 2)
                 cv2.imshow(window_name, blank)
 
             raw_key = cv2.waitKey(15)
             if raw_key != -1:
                 key = raw_key & 0xFF
 
+                # [Q] hoặc [ESC]: Thoát
                 if key in (ord("q"), ord("Q"), 27):
                     break
 
+                # [P]: Tạm dừng
                 elif key in (ord("p"), ord("P")):
                     is_paused = not is_paused
                     toast_msg = "ĐÃ TẠM DỪNG STREAM" if is_paused else "ĐÃ TIẾP TỤC STREAM"
                     toast_expire_time = time.time() + 2.0
 
+                # [H]: Ẩn / Hiện HUD
                 elif key in (ord("h"), ord("H")):
                     show_hud = not show_hud
                     toast_msg = "ĐÃ BẬT BẢNG HUD" if show_hud else "ĐÃ ẨN BẢNG HUD"
                     toast_expire_time = time.time() + 1.5
 
+                # [R]: Reset thống kê
                 elif key in (ord("r"), ord("R")):
                     worker.reset_stats()
                     toast_msg = "ĐÃ RESET SỐ LIỆU THỐNG KÊ"
                     toast_expire_time = time.time() + 2.0
                     print("[Thống kê] Đã reset toàn bộ thông số về 0.")
 
+                # [S]: Chụp ảnh lưu khung hình
                 elif key in (ord("s"), ord("S")):
-                    if last_frame is not None:
-                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")[:19]
-                        save_path = os.path.join(args.save_dir, f"esp_frame_{timestamp}.jpg")
-                        cv2.imwrite(save_path, last_frame)
-                        toast_msg = f"ĐÃ LƯU: {os.path.basename(save_path)}"
+                    if last_raw_frame is not None:
+                        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                        # 1. Lưu ảnh RAW nguyên bản đúng độ phân giải gốc của camera
+                        raw_name = f"esp_raw_{timestamp}_{last_raw_frame.shape[1]}x{last_raw_frame.shape[0]}.jpg"
+                        raw_path = os.path.join(args.save_dir, raw_name)
+                        cv2.imwrite(raw_path, last_raw_frame)
+
+                        # 2. Lưu ảnh toàn màn hình có kèm HUD
+                        hud_name = f"esp_hud_{timestamp}.jpg"
+                        hud_path = os.path.join(args.save_dir, hud_name)
+                        cv2.imwrite(hud_path, display)
+
+                        toast_msg = f"ĐÃ LƯU: {raw_name}"
                         toast_expire_time = time.time() + 2.5
-                        print(f"[Snapshot] Đã lưu frame vào: {save_path}")
+                        print(f"[Snapshot] Đã lưu ảnh RAW: {raw_path}")
+                        print(f"[Snapshot] Đã lưu ảnh HUD: {hud_path}")
 
     except KeyboardInterrupt:
         pass
