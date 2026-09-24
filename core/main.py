@@ -133,6 +133,105 @@ def draw_vn_banner(frame, title, text):
 def _resolve_default(preferred: Path, fallback: Path) -> str:
     return str(preferred if preferred.exists() else fallback)
 
+def resolve_esp_ip(target_ip):
+    session = requests.Session()
+    session.trust_env = False
+
+    # 1. Thử kết nối IP mục tiêu trước (IP truyền vào hoặc IP đã lưu trong configs/esp_ip.txt)
+    if target_ip:
+        try:
+            r = session.get(f"http://{target_ip}/status", timeout=1.2)
+            if r.status_code == 200 and "Blind to Bright" in r.text:
+                return target_ip
+        except Exception:
+            print(f"[ESP32] IP cấu hình '{target_ip}' không phản hồi qua Wi-Fi...")
+
+    # 2. TỰ ĐỘNG FALLBACK VỀ MẠNG CỦA ESP (SoftAP 192.168.4.1) KHI ESP KHÔNG VÀO ĐƯỢC WI-FI
+    if target_ip != "192.168.4.1":
+        try:
+            r = session.get("http://192.168.4.1/status", timeout=0.8)
+            if r.status_code == 200 and "Blind to Bright" in r.text:
+                print("\n" + "*" * 65)
+                print("[ESP32 Fallback] Đã tự động FALLBACK sang mạng của ESP (SoftAP): 192.168.4.1")
+                print("*" * 65 + "\n")
+                return "192.168.4.1"
+        except Exception:
+            pass
+
+    # 3. Quét thông minh bảng ARP trong mạng LAN nếu ESP được router cấp IP DHCP mới
+    ESP_MACS = (
+        "14-c1-9f", "24-0a-c4", "24-6f-28", "24-dc-c3", "30-ae-a4", "3c-61-05", "3c-71-bf",
+        "40-22-d8", "40-91-51", "48-27-e2", "48-31-b7", "48-55-19", "54-32-04", "54-43-b2",
+        "70-04-1d", "7c-df-a1", "84-0d-8e", "84-cc-a8", "84-f7-03", "94-3c-c6", "a4-cf-12",
+        "a4-e5-7c", "b4-e6-2d", "bc-dd-c2", "c4-4f-33", "c4-dd-57", "cc-50-e3", "dc-54-75",
+        "e8-31-cd", "e8-db-84", "ec-94-cb", "f0-08-d1"
+    )
+    try:
+        import subprocess
+        from concurrent.futures import ThreadPoolExecutor
+
+        out = subprocess.check_output("arp -a", shell=True, text=True)
+        esp_cands = []
+        other_cands = []
+        for line in out.splitlines():
+            parts = line.split()
+            if len(parts) >= 2 and parts[0].count(".") == 3:
+                ip = parts[0]
+                mac = parts[1].lower() if len(parts) > 1 else ""
+                if ip not in [target_ip, "192.168.4.1", "255.255.255.255"] and not ip.startswith("224.") and not ip.startswith("239.") and not ip.endswith(".255"):
+                    if any(mac.startswith(pfx) for pfx in ESP_MACS):
+                        esp_cands.append(ip)
+                    else:
+                        other_cands.append(ip)
+
+        ordered_cands = esp_cands + other_cands
+        def _check(ip):
+            try:
+                res = session.get(f"http://{ip}/status", timeout=0.5)
+                if res.status_code == 200 and "Blind to Bright" in res.text:
+                    return ip
+            except Exception:
+                pass
+            return None
+
+        with ThreadPoolExecutor(max_workers=20) as pool:
+            for cand_ip in pool.map(_check, ordered_cands):
+                if cand_ip:
+                    print(f"[ESP32 Auto-Discover] Đã tìm thấy ESP32 tại IP mạng LAN: {cand_ip}")
+                    return cand_ip
+    except Exception:
+        pass
+
+    # 4. Kiểm tra xem có đang phát Wi-Fi SoftAP gần không
+    try:
+        import subprocess
+        wlan_out = subprocess.check_output("netsh wlan show networks", shell=True, text=True, stderr=subprocess.DEVNULL)
+        if "ESP32-S3-CAMERA" in wlan_out:
+            print("\n" + "=" * 65)
+            print("[ESP32 Fallback] Phát hiện Wi-Fi SoftAP của ESP: 'ESP32-S3-CAMERA'!")
+            print("[ESP32 Fallback] Đang thử kết nối máy tính vào mạng của ESP...")
+            print("=" * 65)
+            subprocess.run(["netsh", "wlan", "connect", "name=ESP32-S3-CAMERA"], capture_output=True, timeout=5)
+            time.sleep(2.5)
+            try:
+                r = session.get("http://192.168.4.1/status", timeout=1.0)
+                if r.status_code == 200 and "Blind to Bright" in r.text:
+                    print("[ESP32 Fallback] Đã kết nối thành công tới ESP32 tại 192.168.4.1!\n")
+                    return "192.168.4.1"
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    fallback = target_ip or "192.168.4.1"
+    print("\n" + "!" * 65)
+    print(f"[ESP32 Cảnh báo] Không thể kết nối tới {target_ip} hoặc mạng của ESP (192.168.4.1). Sử dụng tạm: {fallback}")
+    print(f"       -> Mẹo: Nếu ESP không vào được Wi-Fi, hãy chuyển Wi-Fi trên máy tính sang:")
+    print(f"               SSID: 'ESP32-S3-CAMERA' (mật khẩu: 12345678)")
+    print("!" * 65 + "\n")
+    return fallback
+
+
 def main():
     default_ckpt = _resolve_default(ROOT_DIR / "models" / "best_bigru_v2.pt", ROOT_DIR / "best_bigru_v2.pt")
     default_conv = _resolve_default(ROOT_DIR / "configs" / "conversation.json", ROOT_DIR / "conversation_config.json")
@@ -195,6 +294,10 @@ def main():
     # Mặc định dự phòng nếu chưa có cấu hình
     if not esp_ip:
         esp_ip = "10.3.79.128"
+
+    # Kiểm tra IP và TỰ ĐỘNG FALLBACK về mạng của ESP (SoftAP 192.168.4.1) khi không vào được Wi-Fi
+    if str(args.camera).lower() in ["esp", "esp32", "cam"] or (esp_ip and not str(args.camera).isdigit()):
+        esp_ip = resolve_esp_ip(esp_ip)
 
     # Lưu lại IP để các lần sau không cần nhập lại
     try:
