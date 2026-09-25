@@ -1,4 +1,5 @@
 import argparse
+from collections import deque
 import json
 import os
 import sys
@@ -30,6 +31,7 @@ if str(ROOT_DIR / "core") not in sys.path:
     sys.path.insert(0, str(ROOT_DIR / "core"))
 
 from camera import LatestFrameCamera
+from decoder import ContinuousWordSpotter, is_idle_word
 from preprocess import build_tensor, extract_landmarks, motion_energy
 from stgcn_model import load_stgcn_checkpoint
 
@@ -126,7 +128,18 @@ def resolve_esp_ip(target_ip):
     return fallback
 
 
-def draw_debug_overlay(display, is_recording, mode, frames_count, top5, target_word=None, target_info=None):
+def draw_debug_overlay(
+    display,
+    is_recording,
+    mode,
+    frames_count,
+    top5,
+    target_word=None,
+    target_info=None,
+    words_sequence=None,
+    candidate_word=None,
+    candidate_conf=0.0,
+):
     h, w = display.shape[:2]
 
     # 1. Top Bar
@@ -146,7 +159,18 @@ def draw_debug_overlay(display, is_recording, mode, frames_count, top5, target_w
     cv2.addWeighted(panel_overlay, 0.85, display, 0.15, 0, display)
     cv2.rectangle(display, (panel_x, panel_y), (panel_x + panel_w, panel_y + panel_h), (0, 215, 255), 2)
 
-    # 3. Bottom Guide Bar
+    # 3. Continuous Sequence Banner (Hộp hiển thị chuỗi từ liên tục)
+    if mode == "continuous":
+        seq_x = 15
+        seq_y = top_bar_h + 15
+        seq_w = panel_x - 30
+        seq_h = 68
+        seq_overlay = display.copy()
+        cv2.rectangle(seq_overlay, (seq_x, seq_y), (seq_x + seq_w, seq_y + seq_h), (16, 22, 30), -1)
+        cv2.addWeighted(seq_overlay, 0.85, display, 0.15, 0, display)
+        cv2.rectangle(display, (seq_x, seq_y), (seq_x + seq_w, seq_y + seq_h), (0, 200, 240), 1)
+
+    # 4. Bottom Guide Bar
     bot_h = 40
     bot_y = h - bot_h
     bot_overlay = display.copy()
@@ -159,7 +183,15 @@ def draw_debug_overlay(display, is_recording, mode, frames_count, top5, target_w
     draw = ImageDraw.Draw(pil_img)
 
     # Top Bar: Trạng thái & Chế độ
-    if is_recording:
+    if mode == "continuous":
+        draw.ellipse((18, 13, 30, 25), fill=(0, 230, 115))
+        if candidate_word:
+            rec_str = f"LIÊN TỤC: Đang nhận [{candidate_word.upper()}] ({candidate_conf*100:.0f}%)"
+            rec_color = (0, 255, 140)
+        else:
+            rec_str = "LIÊN TỤC: Sẵn sàng - Hãy làm các cử chỉ nối tiếp nhau..."
+            rec_color = (180, 240, 200)
+    elif is_recording:
         draw.ellipse((18, 13, 30, 25), fill=(255, 40, 40))
         rec_str = f"ĐANG THU CỬ CHỈ ({frames_count} frames) - BẤM SPACE ĐỂ DỪNG"
         rec_color = (255, 80, 80)
@@ -170,7 +202,17 @@ def draw_debug_overlay(display, is_recording, mode, frames_count, top5, target_w
     draw.text((38, 10), rec_str, font=FONT_BOLD, fill=rec_color)
 
     mode_tag = f"Chế độ: {mode.upper()}"
-    draw.text((w - 180, 11), mode_tag, font=FONT_HINT, fill=(200, 200, 200))
+    draw.text((w - 190, 11), mode_tag, font=FONT_HINT, fill=(200, 200, 200))
+
+    # Continuous Sequence Content
+    if mode == "continuous":
+        draw.text((seq_x + 12, seq_y + 8), "CHUỖI TỪ ĐÃ NHẬN DIỆN LIÊN TIẾP:", font=FONT_SMALL, fill=(0, 215, 255))
+        valid_seq = [w for w in words_sequence if not is_idle_word(w)] if words_sequence else []
+        if valid_seq and len(valid_seq) > 0:
+            seq_display = "  ➔  ".join(f"[{w}]" for w in valid_seq[-5:])
+            draw.text((seq_x + 12, seq_y + 30), seq_display, font=FONT_BOLD, fill=(255, 225, 70))
+        else:
+            draw.text((seq_x + 12, seq_y + 32), "(Chưa có từ nào. Hãy làm các cử chỉ liên tục trước camera...)", font=FONT_HINT, fill=(160, 175, 190))
 
     # Right Panel Header
     draw.text((panel_x + 15, panel_y + 12), "TOP 5 DỰ ĐOÁN MÔ HÌNH", font=FONT_BOLD, fill=(0, 215, 255))
@@ -210,7 +252,7 @@ def draw_debug_overlay(display, is_recording, mode, frames_count, top5, target_w
             draw.text((panel_x + 15, panel_y + panel_h - 60), f"Chênh lệch #1 vượt #2: +{diff:.1f}%", font=FONT_SMALL, fill=diff_color)
     else:
         draw.text((panel_x + 25, panel_y + 90), "Chưa có dữ liệu cử chỉ.", font=FONT_HINT, fill=(150, 150, 150))
-        draw.text((panel_x + 25, panel_y + 115), "Bấm [SPACE] để bắt đầu thu.", font=FONT_SMALL, fill=(110, 110, 110))
+        draw.text((panel_x + 25, panel_y + 115), "Hãy làm cử chỉ trước camera.", font=FONT_SMALL, fill=(110, 110, 110))
 
     # Hiển thị Target Word (nếu có)
     if target_word:
@@ -220,12 +262,15 @@ def draw_debug_overlay(display, is_recording, mode, frames_count, top5, target_w
             tg_str = f"Mục tiêu: '{target_word}' -> Hạng #{tg_rank} ({tg_conf*100:.1f}%)"
             tg_color = (100, 255, 100) if tg_rank == 1 else ((255, 215, 0) if tg_rank <= 3 else (255, 80, 80))
         else:
-            tg_str = f"Mục tiêu: '{target_word}' (Chờ làm cử chỉ)"
+            tg_str = f"Mục tiêu: '{target_word}' (Chờ cử chỉ)"
             tg_color = (200, 200, 200)
         draw.text((panel_x + 15, panel_y + panel_h - 26), tg_str, font=FONT_SMALL, fill=tg_color)
 
     # Bottom Guide Bar
-    guide_str = "[SPACE] Bắt đầu / Dừng thu & Phân tích  |  [M] Đổi chế độ  |  [C] Xóa kết quả  |  [Q] Thoát"
+    if mode == "continuous":
+        guide_str = "[M] Đổi chế độ  |  [C] Xóa chuỗi từ  |  [BACKSPACE] Xóa từ cuối  |  [Q] Thoát"
+    else:
+        guide_str = "[SPACE] Bắt đầu / Dừng thu & Phân tích  |  [M] Đổi chế độ  |  [C] Xóa kết quả  |  [Q] Thoát"
     draw.text((25, bot_y + 10), guide_str, font=FONT_HINT, fill=(220, 220, 220))
 
     display[:] = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
@@ -272,7 +317,14 @@ def main():
     parser.add_argument("--esp-ip", default=None, help="IP thủ công của ESP32")
     parser.add_argument("--target", default=None, help="Từ mục tiêu bạn đang muốn test (ví dụ: 'Cảm ơn')")
     parser.add_argument("--device", default=None, choices=["cpu", "cuda"])
-    parser.add_argument("--mode", default="manual", choices=["manual", "auto"], help="Chế độ thu: manual (bấm SPACE) hoặc auto (tự spotting)")
+    parser.add_argument("--mode", default="continuous", choices=["continuous", "manual", "auto"], help="Chế độ: continuous (nhận diện liên tục), manual (bấm SPACE), auto (tự spotting)")
+    parser.add_argument("--frames", type=int, default=None, help="Độ dài chuỗi frame (tự nhận diện: 15 nếu checkpoint 15-frame, 48 cho checkpoint chuẩn)")
+    parser.add_argument("--stride", type=int, default=3, help="Bước trượt sliding window (mặc định 3 frames)")
+    parser.add_argument("--conf", type=float, default=0.35, help="Ngưỡng tin cậy tối thiểu cho continuous spotter (mặc định 0.35)")
+    parser.add_argument("--margin", type=float, default=0.08, help="Ngưỡng chênh lệch Top1 - Top2 tối thiểu (mặc định 0.08)")
+    parser.add_argument("--min-peak", type=float, default=0.42, help="Ngưỡng đỉnh xác suất tối thiểu để công nhận cử chỉ (mặc định 0.42)")
+    parser.add_argument("--min-hold", type=int, default=2, help="Số bước duy trì nhận diện tối thiểu để công nhận từ (mặc định 2)")
+    parser.add_argument("--cooldown", type=int, default=5, help="Số bước giãn cách để tránh lặp từ vừa nhận diện (mặc định 5)")
     parser.add_argument("--list", action="store_true", help="In ra danh sách 472 nhãn từ vựng rồi thoát")
     parser.add_argument("--search", default=None, help="Tìm kiếm nhãn theo từ khóa rồi thoát")
     args = parser.parse_args()
@@ -305,6 +357,14 @@ def main():
     print(f"\n[Model] Đã tải ST-GCN Transformer | classes={num_classes} | device={device}")
     if "val_acc" in checkpoint:
         print(f"[Model] Checkpoint val_acc={checkpoint['val_acc']:.4f}")
+
+    if args.frames is not None:
+        window_size = int(args.frames)
+    elif "15_frame" in str(checkpoint_path).lower():
+        window_size = 15
+    else:
+        window_size = 48
+    print(f"[Model] Cấu hình cửa sổ thời gian (window_size): {window_size} frames")
 
     # Xử lý IP Camera ESP32
     if str(args.camera).lower() in ["esp", "esp32", "cam"]:
@@ -367,8 +427,21 @@ def main():
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW_NAME, CANVAS_WIDTH, CANVAS_HEIGHT)
 
-    mode = args.mode  # 'manual' hoặc 'auto'
+    mode = args.mode  # 'continuous', 'manual', hoặc 'auto'
     target_word = args.target
+
+    spotter = ContinuousWordSpotter(
+        idx_to_class,
+        confidence_threshold=args.conf,
+        margin_threshold=args.margin,
+        min_peak_conf=args.min_peak,
+        min_hold_steps=args.min_hold,
+        cooldown_steps=args.cooldown,
+    )
+    sliding_window = deque(maxlen=window_size)
+    frame_counter = 0
+    candidate_word = None
+    candidate_conf = 0.0
 
     is_recording = False
     gesture_frames = []
@@ -381,16 +454,21 @@ def main():
     previous_landmarks = None
     last_frame_id = -1
 
-    print("\n" + "=" * 65)
-    print("  [DEBUGGER SẴN SÀNG]")
-    print("  - Chế độ: THỦ CÔNG (Manual).")
-    print("    -> Bấm [SPACE] lần 1: Bắt đầu thu cử chỉ.")
-    print("    -> Làm cử chỉ.")
-    print("    -> Bấm [SPACE] lần 2: Dừng thu & Phân tích Top 5 ngay lập tức!")
-    print("  - Phím [M]: Đổi giữa THỦ CÔNG và TỰ ĐỘNG.")
-    print("  - Phím [C]: Xóa kết quả phân tích cũ.")
-    print("  - Phím [Q]: Thoát.")
-    print("=" * 65 + "\n")
+    print("\n" + "=" * 68)
+    print("  [DEBUGGER SẴN SÀNG - CÔNG CỤ NHẬN DIỆN CỬ CHỈ LIÊN TỤC]")
+    print(f"  - Checkpoint  : {checkpoint_path.name} ({window_size} frames)")
+    print(f"  - Chế độ      : {mode.upper()}")
+    if mode == "continuous":
+        print(f"  - Cơ chế      : Cửa sổ trượt (stride={args.stride}) + Dynamic Peak Detection")
+        print("    -> Bạn có thể làm các từ nối tiếp nhau liên tục mà không cần dừng tay!")
+        print("    -> Hệ thống sẽ tự động bắt đỉnh chuyển giao và chốt từng từ.")
+    print("  - Phím tắt điều khiển:")
+    print("    * [M]        : Đổi chế độ xoay vòng (CONTINUOUS -> MANUAL -> AUTO)")
+    print("    * [C]        : Xóa sạch chuỗi từ đã nhận diện")
+    print("    * [BACKSPACE]: Xóa từ cuối cùng (nếu nhận diện nhầm)")
+    print("    * [SPACE]    : Bắt đầu / Dừng thu (chỉ áp dụng trong chế độ Manual)")
+    print("    * [Q]        : Thoát chương trình")
+    print("=" * 68 + "\n")
 
     try:
         while True:
@@ -404,65 +482,92 @@ def main():
                     break
                 continue
 
-            key = cv2.waitKey(1) & 0xFF
+            raw_key = cv2.waitKey(1)
+            if raw_key != -1:
+                key = raw_key & 0xFF
 
-            # [SPACE]: Bật/Tắt thu nhận cử chỉ trong Manual Mode
-            if key == 32:
-                if mode == "manual":
-                    if not is_recording:
-                        # Bắt đầu thu
-                        is_recording = True
-                        gesture_frames = []
-                        record_start_time = time.time()
-                        print("\n[REC] >>> BẮT ĐẦU THU CỬ CHỈ... Hãy làm động tác!")
-                    else:
-                        # Dừng thu và phân tích ngay lập tức
-                        is_recording = False
-                        duration = time.time() - record_start_time
-                        print(f"[REC] >>> ĐÃ DỪNG THU! Tổng: {len(gesture_frames)} frames ({duration:.2f}s). Đang phân tích...")
-
-                        if len(gesture_frames) >= 8:
-                            input_tensor = build_tensor(gesture_frames, device)
-                            with torch.no_grad():
-                                logits = model(input_tensor)
-                                probs = torch.softmax(logits, dim=-1)[0].cpu().numpy()
-
-                            top_indices = np.argsort(probs)[::-1]
-                            last_top5 = [(idx_to_class.get(int(idx), f"Class_{idx}"), float(probs[idx])) for idx in top_indices[:5]]
-
-                            # Kiểm tra Target Word nếu có
-                            last_target_info = None
-                            if target_word:
-                                for r, idx in enumerate(top_indices, 1):
-                                    w_name = idx_to_class.get(int(idx), "")
-                                    if w_name.lower() == target_word.lower():
-                                        last_target_info = (r, float(probs[idx]))
-                                        break
-
-                            print_terminal_report(len(gesture_frames), duration, last_top5, target_word, last_target_info, mode="manual")
+                # [SPACE]: Bật/Tắt thu nhận cử chỉ trong Manual Mode
+                if key == 32:
+                    if mode == "manual":
+                        if not is_recording:
+                            # Bắt đầu thu
+                            is_recording = True
+                            gesture_frames = []
+                            record_start_time = time.time()
+                            print("\n[REC] >>> BẮT ĐẦU THU CỬ CHỈ... Hãy làm động tác!")
                         else:
-                            print(f"[Cảnh báo] Số frames quá ít ({len(gesture_frames)} frames < 8). Cử chỉ bị hủy.")
-                else:
-                    # Auto mode: Reset
-                    gesture_frames = []
+                            # Dừng thu và phân tích ngay lập tức
+                            is_recording = False
+                            duration = time.time() - record_start_time
+                            print(f"[REC] >>> ĐÃ DỪNG THU! Tổng: {len(gesture_frames)} frames ({duration:.2f}s). Đang phân tích...")
+
+                            if len(gesture_frames) >= 8:
+                                input_tensor = build_tensor(gesture_frames, device, target_len=window_size)
+                                with torch.no_grad():
+                                    logits = model(input_tensor)
+                                    probs = torch.softmax(logits, dim=-1)[0].cpu().numpy()
+
+                                top_indices = np.argsort(probs)[::-1]
+                                last_top5 = [(idx_to_class.get(int(idx), f"Class_{idx}"), float(probs[idx])) for idx in top_indices[:5]]
+
+                                # Kiểm tra Target Word nếu có
+                                last_target_info = None
+                                if target_word:
+                                    for r, idx in enumerate(top_indices, 1):
+                                        w_name = idx_to_class.get(int(idx), "")
+                                        if w_name.lower() == target_word.lower():
+                                            last_target_info = (r, float(probs[idx]))
+                                            break
+
+                                print_terminal_report(len(gesture_frames), duration, last_top5, target_word, last_target_info, mode="manual")
+                            else:
+                                print(f"[Cảnh báo] Số frames quá ít ({len(gesture_frames)} frames < 8). Cử chỉ bị hủy.")
+                    elif mode == "continuous":
+                        seq_str = " ➔ ".join(f"[{w}]" for w in spotter.words_sequence) if spotter.words_sequence else "(Chưa có)"
+                        print(f"\n[Chuỗi từ hiện tại]: {seq_str}")
+                    else:
+                        # Auto mode: Reset
+                        gesture_frames = []
+                        is_recording = False
+
+                # [M]: Đổi chế độ xoay vòng: continuous -> manual -> auto -> continuous
+                elif key in (ord("m"), ord("M")):
+                    modes = ["continuous", "manual", "auto"]
+                    cur_idx = modes.index(mode) if mode in modes else 0
+                    mode = modes[(cur_idx + 1) % len(modes)]
                     is_recording = False
+                    gesture_frames = []
+                    sliding_window.clear()
+                    spotter.clear()
+                    candidate_word = None
+                    candidate_conf = 0.0
+                    last_top5 = []
+                    last_target_info = None
+                    print(f"\n[Mode] Đã chuyển sang chế độ: {mode.upper()}")
 
-            # [M]: Đổi chế độ Manual <-> Auto
-            elif key == ord("m") or key == ord("M"):
-                mode = "auto" if mode == "manual" else "manual"
-                is_recording = False
-                gesture_frames = []
-                print(f"\n[Mode] Đã chuyển sang chế độ: {mode.upper()}")
+                # [C]: Xóa chuỗi từ / kết quả phân tích cũ
+                elif key in (ord("c"), ord("C")):
+                    spotter.clear()
+                    sliding_window.clear()
+                    candidate_word = None
+                    candidate_conf = 0.0
+                    last_top5 = []
+                    last_target_info = None
+                    print("\n[Action] Đã xóa toàn bộ chuỗi từ và kết quả phân tích cũ.")
 
-            # [C]: Xóa kết quả
-            elif key == ord("c") or key == ord("C"):
-                last_top5 = []
-                last_target_info = None
-                print("\n[Action] Đã xóa kết quả phân tích cũ.")
+                # [BACKSPACE] hoặc [DEL]: Xóa từ cuối cùng vừa nhận diện
+                elif key in (8, 127):
+                    if mode == "continuous":
+                        removed = spotter.remove_last_word()
+                        if removed:
+                            seq_str = " ➔ ".join(f"[{w}]" for w in spotter.words_sequence) if spotter.words_sequence else "(Trống)"
+                            print(f"\n[Action] Đã xóa từ cuối: [{removed}]  |  Chuỗi còn lại: {seq_str}")
+                        else:
+                            print("\n[Action] Chuỗi từ đang trống, không có gì để xóa.")
 
-            # [Q] hoặc [ESC]: Thoát
-            elif key == ord("q") or key == ord("Q") or key == 27:
-                break
+                # [Q] hoặc [ESC]: Thoát
+                elif key in (ord("q"), ord("Q"), 27):
+                    break
 
             if is_new:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -481,7 +586,37 @@ def main():
                 # =========================================================
                 # XỬ LÝ THEO CHẾ ĐỘ
                 # =========================================================
-                if mode == "manual":
+                if mode == "continuous":
+                    sliding_window.append(landmarks)
+                    frame_counter += 1
+
+                    # Thực hiện suy luận theo nhịp stride khi có đủ khung hình tối thiểu
+                    min_req = min(12, window_size)
+                    if (frame_counter % args.stride == 0) and (len(sliding_window) >= min_req):
+                        input_tensor = build_tensor(list(sliding_window), device, target_len=window_size)
+                        with torch.no_grad():
+                            logits = model(input_tensor)
+                            probs = torch.softmax(logits, dim=-1)[0].cpu().numpy()
+
+                        committed_word, candidate_word, candidate_conf, last_top5 = spotter.update(
+                            probs, hand_detected=hand_detected, motion=motion
+                        )
+
+                        if committed_word:
+                            seq_str = " ➔ ".join(f"[{w}]" for w in spotter.words_sequence)
+                            print(f"\n[CONTINUOUS SPOT] >>> ĐÃ CHỐT TỪ: [{committed_word.upper()}]  |  Chuỗi: {seq_str}")
+
+                        # Cập nhật target_info nếu có target_word
+                        if target_word:
+                            top_indices = np.argsort(probs)[::-1]
+                            last_target_info = None
+                            for r, idx in enumerate(top_indices, 1):
+                                w_name = idx_to_class.get(int(idx), "")
+                                if w_name.lower() == target_word.lower():
+                                    last_target_info = (r, float(probs[idx]))
+                                    break
+
+                elif mode == "manual":
                     if is_recording:
                         gesture_frames.append(landmarks)
                 else:
@@ -500,12 +635,12 @@ def main():
                         else:
                             auto_idle_count = 0
 
-                        if auto_idle_count >= 4 or len(gesture_frames) >= 48:
+                        if auto_idle_count >= 4 or len(gesture_frames) >= window_size:
                             is_recording = False
                             duration = time.time() - record_start_time
-                            valid_frames = gesture_frames[:48]
+                            valid_frames = gesture_frames[:window_size]
                             if len(valid_frames) >= 10:
-                                input_tensor = build_tensor(valid_frames, device)
+                                input_tensor = build_tensor(valid_frames, device, target_len=window_size)
                                 with torch.no_grad():
                                     logits = model(input_tensor)
                                     probs = torch.softmax(logits, dim=-1)[0].cpu().numpy()
@@ -551,10 +686,13 @@ def main():
                     display,
                     is_recording,
                     mode,
-                    len(gesture_frames),
+                    len(sliding_window) if mode == "continuous" else len(gesture_frames),
                     last_top5,
                     target_word=target_word,
                     target_info=last_target_info,
+                    words_sequence=spotter.words_sequence if mode == "continuous" else None,
+                    candidate_word=candidate_word if mode == "continuous" else None,
+                    candidate_conf=candidate_conf if mode == "continuous" else 0.0,
                 )
 
                 cv2.imshow(WINDOW_NAME, display)

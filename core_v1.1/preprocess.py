@@ -124,14 +124,15 @@ def build_9_channel_tensor(data):
     return torch.from_numpy(combined).permute(2, 0, 1)
 
 
-def build_tensor(frame_buffer, device):
+def build_tensor(frame_buffer, device, target_len=None):
     """
-    Chuyển đổi chuỗi frames thành tensor 9 kênh (Tọa độ, Vận tốc, Gia tốc) với shape (1, 9, 48, 76).
-    Tự động bù khuyết landmark và co giãn về 48 frame nếu chuỗi có độ dài khác 48.
+    Chuyển đổi chuỗi frames thành tensor 9 kênh (Tọa độ, Vận tốc, Gia tốc) với shape (1, 9, T, 76).
+    Tự động bù khuyết landmark và co giãn về target_len (mặc định 48) nếu chuỗi có độ dài khác.
     """
     data = np.stack(frame_buffer, axis=0).astype(np.float32)
-    if data.shape[0] != SEQUENCE_LENGTH:
-        data = resample_sequence(data, target_len=SEQUENCE_LENGTH)
+    target_frames = target_len if target_len is not None else SEQUENCE_LENGTH
+    if data.shape[0] != target_frames:
+        data = resample_sequence(data, target_len=target_frames)
 
     data = normalize_scale_and_coords(data)
     tensor = build_9_channel_tensor(data).unsqueeze(0)
