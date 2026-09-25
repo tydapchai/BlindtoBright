@@ -235,15 +235,15 @@ class ContinuousWordSpotter:
         top2_w, top2_c = top5[1] if len(top5) > 1 else ("", 0.0)
         margin = top1_c - top2_c
 
-        # Kiểm tra trạng thái Idle (qua tên nhãn model hoặc chuyển động tay dừng)
+        # Kiểm tra trạng thái Idle (qua tên nhãn model hoặc khi không có tay)
         is_idle_class = is_idle_word(top1_w)
-        is_motion_idle = (motion < self.min_motion) or (not hand_detected)
 
-        # Một cử chỉ hợp lệ phải: có tay, không phải class Idle, tay đang chuyển động, xác suất & margin đạt chuẩn
+        # Cử chỉ hợp lệ: có tay, không phải class Idle, xác suất & margin đạt chuẩn
+        # QUAN TRỌNG: Không phạt vận tốc chuyển động (motion) vì khi làm cử chỉ tĩnh (pose giữ yên),
+        # tay sẽ đứng im nhưng xác suất mô hình lại đạt đỉnh cao nhất!
         is_valid_sign = (
             hand_detected
             and (not is_idle_class)
-            and (not is_motion_idle)
             and (top1_c >= self.conf_threshold)
             and (margin >= self.margin_threshold)
         )
@@ -258,10 +258,14 @@ class ContinuousWordSpotter:
                     self.candidate_peak_conf = top1_c
                     self.candidate_peak_margin = margin
 
-                # Bắt đỉnh và tụt xác suất (Peak-Drop Hysteresis):
-                # Nếu từ đã đạt đỉnh vững vàng (>= min_peak_conf) và nay xác suất đã giảm sâu từ đỉnh:
-                # -> Cử chỉ đã kết thúc tự nhiên! Chốt từ ngay lập tức.
+                # Điều kiện 1: CHỐT NGAY KHI GIỮ TAY VỮNG (Sustained Hold)
+                # Khi người dùng làm cử chỉ và giữ vững >= min_hold_steps với xác suất cao (>= min_peak_conf):
+                # -> Chốt ngay lập tức vào danh sách, không bắt người dùng phải hạ tay hay đợi tụt %!
                 if self.hold_count >= self.min_hold_steps and self.candidate_peak_conf >= self.min_peak_conf:
+                    committed_word = self._commit_word(self.candidate_word)
+
+                # Điều kiện 2: CHỐT KHI SỤT ĐỈNH (Peak-Drop) nếu là cử chỉ chuyển động nhanh
+                elif self.hold_count >= 1 and self.candidate_peak_conf >= self.min_peak_conf:
                     if top1_c <= self.candidate_peak_conf * self.peak_drop_ratio:
                         committed_word = self._commit_word(self.candidate_word)
             else:
