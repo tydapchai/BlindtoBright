@@ -270,10 +270,10 @@ class ContinuousWordSpotter:
                         committed_word = self._commit_word(self.candidate_word)
             else:
                 # Một từ mới hợp lệ xuất hiện và chiếm ưu thế:
-                # Nếu từ cũ đã tích lũy đủ bước và đạt đỉnh chuẩn -> Chốt từ cũ trước!
+                # Nếu từ cũ đã đạt đỉnh chuẩn (>= min_peak_conf) -> Chốt từ cũ trước!
                 if (
                     self.candidate_word is not None
-                    and self.hold_count >= self.min_hold_steps
+                    and self.hold_count >= 1
                     and self.candidate_peak_conf >= self.min_peak_conf
                 ):
                     committed_word = self._commit_word(self.candidate_word)
@@ -290,10 +290,10 @@ class ContinuousWordSpotter:
                     self.hold_count = 0
         else:
             # Rơi vào trạng thái Idle hoặc giai đoạn chuyển tay giữa 2 từ:
-            # Nếu cử chỉ trước đó đã đạt đỉnh chuẩn -> Chốt cử chỉ đó!
+            # Nếu cử chỉ trước đó đã đạt đỉnh chuẩn (>= min_peak_conf) -> Chốt cử chỉ đó ngay khi hạ tay!
             if (
                 self.candidate_word is not None
-                and self.hold_count >= self.min_hold_steps
+                and self.hold_count >= 1
                 and self.candidate_peak_conf >= self.min_peak_conf
             ):
                 committed_word = self._commit_word(self.candidate_word)

@@ -26,6 +26,7 @@ import argparse
 from collections import deque
 from datetime import datetime
 import os
+from pathlib import Path
 import subprocess
 import sys
 import threading
@@ -697,7 +698,13 @@ def main():
         print("\n=======================================================")
         print("       BẮT ĐẦU KIỂM TRA LUỒNG FRAME CAMERA ESP32      ")
         print("=======================================================")
-        actual_ip = resolve_esp_ip(args.ip)
+        target_ip = args.ip
+        if not target_ip:
+            ip_file = Path(__file__).resolve().parent.parent / "configs" / "esp_ip.txt"
+            if ip_file.is_file():
+                target_ip = ip_file.read_text(encoding="utf-8").strip() or None
+        target_ip = target_ip or "10.245.192.219"
+        actual_ip = resolve_esp_ip(target_ip)
 
         test_session = requests.Session()
         test_session.trust_env = False

@@ -290,7 +290,7 @@ def main():
         if ip_file.is_file():
             args.esp_ip = ip_file.read_text(encoding="utf-8").strip() or None
     if not args.esp_ip:
-        args.esp_ip = "10.3.79.128"
+        args.esp_ip = "10.245.192.219"
 
     # Kiểm tra IP và TỰ ĐỘNG FALLBACK về mạng của ESP (SoftAP 192.168.4.1) khi không vào được Wi-Fi
     should_resolve = (

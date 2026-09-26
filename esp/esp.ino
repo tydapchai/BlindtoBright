@@ -13,8 +13,8 @@
 // =====================================================
 // Wi-Fi Configuration
 // =====================================================
-const char* WIFI_SSID = "FPTU_Library";
-const char* WIFI_PASSWORD = "12345678";
+const char* WIFI_SSID = "JungKwan";
+const char* WIFI_PASSWORD = "quan2005";
 
 // ==============================================================================
 // 1. PIN CAMERA OV2640 (Goouuu ESP32-S3-CAM)

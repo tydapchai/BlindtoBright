@@ -372,7 +372,7 @@ def main():
         target_ip = args.esp_ip
         if not target_ip and ip_file.is_file():
             target_ip = ip_file.read_text(encoding="utf-8").strip() or None
-        target_ip = target_ip or "10.3.79.128"
+        target_ip = target_ip or "10.245.192.219"
         actual_ip = resolve_esp_ip(target_ip)
         try:
             ip_file.parent.mkdir(parents=True, exist_ok=True)

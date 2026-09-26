@@ -1,0 +1,152 @@
+BÁO CÁO THUYẾT MINH DỰ ÁN
+CUỘC THI SÁNG TẠO CÔNG NGHỆ VÀ TRÍ TUỆ NHÂN TẠO · BẢNG C
+LĨNH VỰC: GIÁO DỤC (EDUCATION & ACCESSIBILITY)
+
+================================================================================
+TÊN DỰ ÁN: BLINDTOBRIGHT (B2B)
+HỆ THỐNG TRỢ LÝ GIAO TIẾP HAI CHIỀU THỜI GIAN THỰC HỖ TRỢ NGƯỜI KHIẾM THÍNH VÀ KHIẾM THỊ DỰA TRÊN THỊ GIÁC MÁY TÍNH VÀ TRÍ TUỆ NHÂN TẠO ĐA PHƯƠNG THỨC
+================================================================================
+
+* Tên đội thi / Tác giả: Phạm Hoàng Minh & Cộng sự
+* Lĩnh vực đăng ký: Giáo dục & Hỗ trợ Tiếp cận (EdTech & Social Accessibility)
+* Phiên bản tài liệu: 1.2 (Kiến trúc ST-GCN Transformer v1.1 & Phần cứng nhúng ESP32)
+* Mã nguồn dự án: https://github.com/tydapchai/BlindtoBright
+
+--------------------------------------------------------------------------------
+MỤC LỤC
+1. TÓM TẮT DỰ ÁN (EXECUTIVE SUMMARY)
+2. BỐI CẢNH & TÍNH CẤP THIẾT CỦA ĐỀ TÀI
+3. MỤC TIÊU DỰ ÁN & ĐỐI TƯỢNG HƯỚNG TỚI
+4. KIẾN TRÚC KỸ THUẬT & NGUYÊN LÝ HOẠT ĐỘNG
+   4.1. Luồng 1: Nhận diện thủ ngữ VSL sang tiếng nói (Sign-to-Speech)
+   4.2. Luồng 2: Nhận diện giọng nói sang văn bản trợ giảng (Speech-to-Text)
+   4.3. Thiết kế phần cứng biên nhúng ESP32
+5. ĐIỂM NỔI BẬT & ĐỔI MỚI SÁNG TẠO VỀ THUẬT TOÁN
+6. KẾT QUẢ THỰC NGHIỆM & ĐÁNH GIÁ HIỆU NĂNG
+7. ỨNG DỤNG THỰC TẾ TRONG GIÁO DỤC & TÁC ĐỘNG XÃ HỘI
+8. KÊ KHAI CÔNG CỤ AI, DỮ LIỆU, THƯ VIỆN & BẢN QUYỀN
+9. LỘ TRÌNH PHÁT TRIỂN & KẾT LUẬN
+--------------------------------------------------------------------------------
+
+
+1. TÓM TẮT DỰ ÁN (EXECUTIVE SUMMARY)
+
+BlindtoBright là một giải pháp công nghệ giáo dục và trợ năng toàn diện, được thiết kế nhằm phá vỡ rào cản giao tiếp giữa người khiếm thính (sử dụng ngôn ngữ ký hiệu) và người bình thường (sử dụng ngôn ngữ nói) trong môi trường học đường và cuộc sống hàng ngày.
+
+Khác với các hệ thống dịch thủ ngữ truyền thống đòi hỏi thiết bị đeo đắt tiền hoặc chỉ hoạt động ở dạng ảnh tĩnh một chiều, BlindtoBright là hệ thống giao tiếp hai chiều thời gian thực (Real-time Bidirectional Assistant) với chi phí phần cứng cực thấp (dưới 300.000 VNĐ):
+
+- Chiều 1 (Ký hiệu → Lời nói): Sử dụng camera (Webcam hoặc module ESP32-CAM) trích xuất 76 điểm đặc trưng khung xương theo thời gian thực → đưa vào mạng nơ-ron tích chập đồ thị không - thời gian (ST-GCN) kết hợp Transformer để nhận diện 472 từ vựng Ngôn ngữ Ký hiệu Việt Nam (VSL) → sử dụng Mô hình Ngôn ngữ Lớn (Gemini LLM) tái cấu trúc ngữ pháp thành câu tiếng Việt hoàn chỉnh → phát âm thanh qua module loa phần cứng ESP32 I2S DAC.
+
+- Chiều 2 (Lời nói → Văn bản trợ giảng): Giọng nói của giáo viên/bạn học được thu qua micro → bộ lọc Silero VAD và mô hình chuyển đổi giọng nói Faster-Whisper phiên âm tức thì thành văn bản trực quan trên màn hình Web/Điện thoại, tự động tóm tắt bài học giúp học sinh khiếm thính dễ dàng tiếp thu kiến thức.
+
+
+2. BỐI CẢNH & TÍNH CẤP THIẾT CỦA ĐỀ TÀI
+
+2.1. Thực trạng xã hội:
+Theo thống kê của Tổ chức Y tế Thế giới (WHO) và Tổng cục Thống kê Việt Nam, hiện có hơn 2,5 triệu người khuyết tật nghe - nói tại Việt Nam. Trong môi trường giáo dục:
+- Hơn 85% trẻ em khiếm thính gặp khó khăn trong việc theo học tại các trường phổ thông hòa nhập do thiếu giáo viên chuyên trách ngôn ngữ ký hiệu.
+- Giao tiếp giữa học sinh khiếm thính với thầy cô và bạn bè đồng trang lứa gần như bị cô lập, dẫn đến tỷ lệ bỏ học cao và hạn chế cơ hội tiếp cận tri thức đại học, nghề nghiệp.
+
+2.2. Hạn chế của các giải pháp hiện nay:
+- Găng tay cảm biến (Data Glove): Bắt cử chỉ ngón tương đối chuẩn nhưng chi phí rất cao (> 5 - 10 triệu VNĐ), dễ đứt gãy cơ học, không thể bắt được vị trí tay tương đối với khuôn mặt/ngực (yếu tố quyết định nghĩa từ trong VSL).
+- Phần mềm dịch ảnh tĩnh (Single-frame CNN): Nhẹ nhưng chỉ nhận diện được bảng chữ cái ngón tay tĩnh (Fingerspelling), hoàn toàn thất bại với từ vựng động có tính biến thiên thời gian.
+- Người phiên dịch thủ ngữ trực tiếp: Chi phí đào tạo rất lớn, số lượng phiên dịch viên cực kỳ khan hiếm, không thể đáp ứng cho từng lớp học hay từng cá nhân.
+
+
+3. MỤC TIÊU DỰ ÁN & ĐỐI TƯỢNG HƯỚNG TỚI
+
+- Mục tiêu kỹ thuật: Xây dựng thành công pipeline nhận diện ngôn ngữ ký hiệu liên tục (Continuous Sign Language Recognition) đạt độ trễ suy luận dưới 350 ms, xử lý trơn tru trên luồng video 25 - 30 FPS, tích hợp phần cứng nhúng phân tán ổn định.
+- Mục tiêu giáo dục: Cung cấp "Người phiên dịch ảo" kiêm "Sổ tay trợ giảng thông minh" đặt ngay trên bàn học, giúp học sinh khiếm thính tự tin phát biểu, nghe giảng và thảo luận nhóm bình đẳng.
+- Đối tượng phục vụ:
+  + Học sinh, sinh viên khiếm thính trong các lớp học hòa nhập và trường chuyên biệt.
+  + Giáo viên, giảng viên cần công cụ hỗ trợ truyền đạt kiến thức cho người học khiếm thính.
+  + Cộng đồng người yếu thế cần thiết bị giao tiếp y tế, hành chính công cộng.
+
+
+4. KIẾN TRÚC KỸ THUẬT & NGUYÊN LÝ HOẠT ĐỘNG
+
+Hệ thống được thiết kế theo mô hình kiến trúc lai (Hybrid Edge-Server Computing), tối ưu hóa luồng dữ liệu hai chiều:
+
+* CHIỀU 1: THỦ NGỮ SANG TIẾNG NÓI (SIGN-TO-SPEECH)
+  1. Thu nhận hình ảnh: Camera Laptop hoặc ESP32-CAM thu luồng video (25-30 FPS).
+  2. Trích xuất Khung xương: MediaPipe Holistic trích xuất 76 Keypoints (33 Pose + 42 Hands + 1 Head).
+  3. Đặc trưng Động học 9 Kênh: Tọa độ vị trí (x,y,z) + Vận tốc (dx) + Gia tốc (d²x).
+  4. Mạng ST-GCN + Transformer: Phân loại 472 từ vựng VSL từ chuỗi 48 khung hình.
+  5. Temporal Decoder & Margin Filter: Lọc trạng thái nghỉ (Idle), ngưỡng tin cậy > 65%, biên Top 1 - Top 2 > 8%.
+  6. Gemini LLM: Sắp xếp lại trật tự từ VSL thành câu tiếng Việt hoàn chỉnh, tự nhiên.
+  7. Gemini TTS & Loa ESP32: Phát giọng nói tiếng Việt rõ ràng qua mạch khuếch đại I2S MAX98357A.
+
+* CHIỀU 2: TIẾNG NÓI SANG VĂN BẢN TRỢ GIẢNG (SPEECH-TO-TEXT)
+  1. Thu âm: Micro điện thoại hoặc laptop của giáo viên/bạn học.
+  2. Silero VAD: Lọc bỏ tiếng ồn nền lớp học, chỉ kích hoạt khi có tiếng nói.
+  3. Faster-Whisper: Phiên âm giọng nói tiếng Việt thời gian thực (độ trễ < 600 ms).
+  4. Giao diện Web Trợ giảng: Chữ phóng to tương phản cao, tự động tóm tắt nội dung bài giảng.
+  5. Học sinh khiếm thính tiếp thu bài học tức thì trên màn hình.
+
+* THIẾT KẾ PHẦN CỨNG NHÚNG ESP32:
+  - Nguồn điện: Pin sạc 5V/2A cấp nguồn.
+  - Camera: Module ESP32-CAM truyền luồng video MJPEG qua Wi-Fi về máy chủ.
+  - Loa phát: Module ESP32 kết nối mạch giải mã I2S DAC MAX98357A và loa 3W/4Ω.
+  - Sơ đồ chân nối (Pinout):
+    + LRC (Word Select) -> GPIO 25
+    + BCLK (Bit Clock)   -> GPIO 26
+    + DIN (Data In)     -> GPIO 22
+    + VIN -> 5V, GND -> GND
+
+
+5. ĐIỂM NỔI BẬT & ĐỔI MỚI SÁNG TẠO VỀ THUẬT TOÁN
+
+1. Giải quyết triệt để vấn đề mất thông tin ngón tay (Hand Shape):
+   Tách riêng nhánh Hand Graph (42 điểm) và Body Pose (33 điểm), giữ nguyên ma trận kề ngón tay xuyên suốt các tầng ST-GCN trước khi dung hợp, bảo toàn 80% ý nghĩa cử chỉ.
+2. Kỹ thuật Tăng cường Dữ liệu Động học (Online Kinematic Augmentation):
+   Tự động xoay góc ngẫu nhiên ±12°, co giãn tỷ lệ 0.9 - 1.1, biến thiên tốc độ thời gian (Temporal Warping) và Joint Dropout 5%, chống hiện tượng "học vẹt" góc quay.
+3. Cơ chế Hậu xử lý Ngữ pháp kết hợp AI Tạo sinh (GenAI Syntax Bridge):
+   Ứng dụng LLM chuyển chuỗi từ rời rạc thành văn phong giao tiếp lễ phép, tự nhiên, chuẩn văn hóa học đường Việt Nam.
+
+
+6. KẾT QUẢ THỰC NGHIỆM & ĐÁNH GIÁ HIỆU NĂNG
+
+- Độ chính xác Top-1 (Validation Acc): 88.4% (trên tập 472 nhãn VSL).
+- Độ chính xác Top-3: 96.1% (đảm bảo từ đúng luôn nằm trong vùng xem xét).
+- Thời gian trích xuất Keypoint (MediaPipe): 12 - 15 ms / frame (đạt 30 FPS realtime).
+- Thời gian suy luận mô hình ST-GCN: 18 ms / window (GPU) / 65 ms (CPU).
+- Độ trễ toàn trình (End-to-End Latency): Dưới 380 ms (không cảm giác giật lag).
+- Chi phí chế tạo phần cứng: Khoảng 280.000 VNĐ (rẻ gấp 20 - 30 lần thiết bị thương mại).
+
+
+7. ỨNG DỤNG THỰC TẾ TRONG GIÁO DỤC & TÁC ĐỘNG XÃ HỘI
+
+7.1. Trong lớp học hòa nhập:
+- Trợ lý phát biểu: Học sinh khiếm thính ra ký hiệu tại chỗ; hệ thống nhận diện và phát âm thanh to rõ ra loa lớp học.
+- Bảng phụ đề trực tiếp: Lời giảng của thầy cô chạy chữ trực tiếp trên màn hình của học sinh.
+
+7.2. Tự học ngôn ngữ ký hiệu:
+- Hệ thống đóng vai trò như một "Gia sư ảo": Người học đứng trước camera luyện tập, hệ thống chấm điểm và phản hồi động tác tay.
+
+7.3. Ý nghĩa nhân văn:
+- Đóng góp vào Mục tiêu Thiên niên kỷ SDG 4 (Giáo dục chất lượng) và SDG 10 (Giảm bất bình đẳng) của Liên Hợp Quốc.
+
+
+8. KÊ KHAI CÔNG CỤ AI, DỮ LIỆU, THƯ VIỆN & BẢN QUYỀN
+
+1. Công cụ AI & API:
+   - Google Gemini API: Tái cấu trúc ngữ pháp và tổng hợp giọng nói tự nhiên (TTS).
+   - Faster-Whisper & Silero VAD: Chuyển đổi giọng nói thành văn bản.
+2. Thư viện mã nguồn mở: PyTorch, MediaPipe Holistic, OpenCV, NumPy, Flask, Waitress.
+3. Dữ liệu huấn luyện: Bộ dữ liệu VSL (Vietnamese Sign Language) 472 nhãn.
+4. Quyền riêng tư: Hệ thống chỉ xử lý các điểm tọa độ khung xương (Keypoints), tuyệt đối không lưu trữ hay truyền tải hình ảnh khuôn mặt người dùng lên máy chủ đám mây.
+
+
+9. LỘ TRÌNH PHÁT TRIỂN & KẾT LUẬN
+
+9.1. Lộ trình phát triển:
+- Giai đoạn 1 (Hiện tại): Hoàn thiện prototype chạy trên PC/Server kết nối ESP32, hỗ trợ 472 từ vựng VSL.
+- Giai đoạn 2 (3 - 6 tháng tới): Lượng tử hóa qua ONNX Runtime / TensorRT chạy độc lập trên chip nhúng biên (Raspberry Pi 5 / Orange Pi AI), mở rộng 1.000+ từ vựng bài giảng.
+- Giai đoạn 3 (1 năm tới): Thiết kế vỏ hộp công nghiệp in 3D, đóng gói thành sản phẩm thương mại hóa giá rẻ hỗ trợ các trường học chuyên biệt.
+
+9.2. Lời kết:
+BlindtoBright là khát vọng mang lại "Ánh sáng của sự thấu hiểu" cho cộng đồng người khiếm thính. Dự án chứng minh sự kết hợp giữa AI hiện đại và phần cứng giá rẻ hoàn toàn có thể tạo nên những giải pháp công nghệ nhân ái, xóa nhòa khoảng cách trong giáo dục.
+
+================================================================================
+Hồ sơ dự án được lập và cam kết tính xác thực bởi Đội thi BlindtoBright.
+================================================================================

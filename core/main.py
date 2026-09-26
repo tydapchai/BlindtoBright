@@ -293,7 +293,7 @@ def main():
 
     # Mặc định dự phòng nếu chưa có cấu hình
     if not esp_ip:
-        esp_ip = "10.3.79.128"
+        esp_ip = "10.3.83.97"
 
     # Kiểm tra IP và TỰ ĐỘNG FALLBACK về mạng của ESP (SoftAP 192.168.4.1) khi không vào được Wi-Fi
     if str(args.camera).lower() in ["esp", "esp32", "cam"] or (esp_ip and not str(args.camera).isdigit()):

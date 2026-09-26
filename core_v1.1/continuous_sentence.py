@@ -86,7 +86,7 @@ def resolve_esp_ip(target_ip=None, timeout=0.15):
         return target_ip
 
     candidates = [
-        "10.3.79.128", "192.168.4.1", "192.168.1.100", "192.168.1.101",
+        "10.245.192.219", "192.168.4.1", "192.168.1.100", "192.168.1.101",
         "192.168.1.102", "192.168.1.105", "192.168.1.110", "192.168.1.150"
     ]
     ordered = [target_ip] + [c for c in candidates if c != target_ip] if target_ip else candidates
@@ -356,7 +356,7 @@ def main():
     parser.add_argument("--checkpoint", default=str(ROOT_DIR / "models" / "best_vsl_model.pth"))
     parser.add_argument("--labels", default=str(ROOT_DIR / "core_v1.1" / "label_map_472.json"))
     parser.add_argument("--camera", default="0", help="'0' (webcam laptop), 'esp' (camera ESP32), hoặc URL http")
-    parser.add_argument("--esp-ip", default=None, help="IP thủ công của ESP32 (ví dụ: 10.3.79.128)")
+    parser.add_argument("--esp-ip", default=None, help="IP thủ công của ESP32 (ví dụ: 10.3.83.97)")
     parser.add_argument("--device", default=None, choices=["cpu", "cuda"])
     parser.add_argument("--frames", type=int, default=None, help="Độ dài chuỗi frame (tự nhận diện: 15 nếu checkpoint 15-frame, 48 cho checkpoint chuẩn)")
     parser.add_argument("--stride", type=int, default=3, help="Bước trượt sliding window (mặc định 3 frames)")
@@ -404,7 +404,7 @@ def main():
         target_ip = args.esp_ip
         if not target_ip and ip_file.is_file():
             target_ip = ip_file.read_text(encoding="utf-8").strip() or None
-        target_ip = target_ip or "10.3.79.128"
+        target_ip = target_ip or "10.245.192.219"
         actual_ip = resolve_esp_ip(target_ip)
         source = f"http://{actual_ip}:81/stream"
         print(f"[Camera] Kết nối Camera ESP32: {source}")
