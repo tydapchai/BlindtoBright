@@ -13,8 +13,8 @@ from urllib.parse import urlparse
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 warnings.filterwarnings("ignore")
 try:
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 except Exception:
     pass
 
@@ -43,6 +43,7 @@ from camera import LatestFrameCamera
 from decoder import ContinuousWordSpotter, is_idle_word
 from gemini_api import GeminiClient
 from preprocess import build_tensor, extract_landmarks, motion_energy
+from ctr_gcn_model import load_ctr_gcn_checkpoint, load_model_checkpoint
 from stgcn_model import load_stgcn_checkpoint
 
 try:
@@ -352,9 +353,9 @@ def draw_continuous_sentence_overlay(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Nhận diện cử chỉ VSL liên tục & Ghép thành câu tiếng Việt tự nhiên (Gemini AI)")
-    parser.add_argument("--checkpoint", default=str(ROOT_DIR / "models" / "best_vsl_model.pth"))
-    parser.add_argument("--labels", default=str(ROOT_DIR / "core_v1.1" / "label_map_472.json"))
+    parser = argparse.ArgumentParser(description="Nhận diện cử chỉ VSL liên tục (CTR-GCN / ST-GCN) & Ghép thành câu tiếng Việt tự nhiên (Gemini AI)")
+    parser.add_argument("--checkpoint", default=str(ROOT_DIR / "models" / "best_vsl_model_ctr_gcn.pth"))
+    parser.add_argument("--labels", default=str(ROOT_DIR / "core_v1.1" / "label_map_472_10w.json"))
     parser.add_argument("--camera", default="0", help="'0' (webcam laptop), 'esp' (camera ESP32), hoặc URL http")
     parser.add_argument("--esp-ip", default=None, help="IP thủ công của ESP32 (ví dụ: 10.3.83.97)")
     parser.add_argument("--device", default=None, choices=["cpu", "cuda"])
@@ -369,19 +370,33 @@ def main():
     parser.add_argument("--no-tts", action="store_true", help="Tắt tính năng phát âm thanh giọng đọc")
     args = parser.parse_args()
 
-    labels_path = Path(args.labels)
-    if not labels_path.exists():
-        labels_path = ROOT_DIR / "core_v1.1" / "label_map_472.json"
-    idx_to_class = read_labels(labels_path)
-
     # Khởi tạo mô hình
     device_name = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     device = torch.device(device_name)
     checkpoint_path = Path(args.checkpoint)
-    model, checkpoint, num_classes = load_stgcn_checkpoint(checkpoint_path, device)
-    print(f"\n[Model] Đã tải ST-GCN Transformer | classes={num_classes} | device={device}")
+    model, checkpoint, num_classes = load_model_checkpoint(checkpoint_path, device)
+    model_name = "CTR-GCN" if "CTR" in type(model).__name__ else "ST-GCN Transformer"
+    print(f"\n[Model] Đã tải {model_name} | classes={num_classes} | device={device}")
     if "val_acc" in checkpoint:
         print(f"[Model] Checkpoint val_acc={checkpoint['val_acc']:.4f}")
+
+    labels_path = Path(args.labels)
+    if "label_map" in checkpoint and isinstance(checkpoint["label_map"], dict) and len(checkpoint["label_map"]) == num_classes:
+        idx_to_class = {int(v): k for k, v in checkpoint["label_map"].items()}
+    elif labels_path.exists():
+        idx_to_class = read_labels(labels_path)
+    else:
+        labels_path = ROOT_DIR / "core_v1.1" / "label_map_472.json"
+        idx_to_class = read_labels(labels_path)
+
+    # Tự động khớp nhãn nếu file nhãn truyền vào không khớp với số classes mô hình
+    if len(idx_to_class) != num_classes:
+        if num_classes == 10 and (CURRENT_DIR / "label_map_472_10w.json").exists():
+            idx_to_class = read_labels(CURRENT_DIR / "label_map_472_10w.json")
+        elif (CURRENT_DIR / "label_map_472.json").exists() and len(read_labels(CURRENT_DIR / "label_map_472.json")) == num_classes:
+            idx_to_class = read_labels(CURRENT_DIR / "label_map_472.json")
+        else:
+            raise ValueError(f"Số nhãn ({len(idx_to_class)}) khác output model ({num_classes})")
 
     if args.frames is not None:
         window_size = int(args.frames)

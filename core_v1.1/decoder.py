@@ -334,4 +334,4 @@ class ContinuousWordSpotter:
         return None
 
     def clear(self):
-        self.reset()
+        self.reset()
