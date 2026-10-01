@@ -13,8 +13,8 @@
 // =====================================================
 // Wi-Fi Configuration
 // =====================================================
-const char* WIFI_SSID = "JungKwan";
-const char* WIFI_PASSWORD = "quan2005";
+const char* WIFI_SSID = "Ty";
+const char* WIFI_PASSWORD = "68686868";
 
 // ==============================================================================
 // 1. PIN CAMERA OV2640 (Goouuu ESP32-S3-CAM)
@@ -127,7 +127,8 @@ uint8_t scan_and_init_oled() {
 
   // QUAN TRỌNG: reset=false, periphBegin=false để không bị Adafruit_SSD1306 gọi wire->begin() đè mất cấu hình chân GPIO 40/41!
   display.begin(SSD1306_SWITCHCAPVCC, addr_found, false, false);
-  Serial.printf("[+] Khoi tao OLED tai dia chi 0x%02X (periphBegin=false)\n", addr_found);
+  display.setRotation(2); // Xoay ngược màn hình OLED 180 độ
+  Serial.printf("[+] Khoi tao OLED tai dia chi 0x%02X (periphBegin=false, rotation=180)\n", addr_found);
   return addr_found;
 }
 
@@ -168,6 +169,83 @@ void oled_show_status(const char* l1, const char* l2, const char* l3, const char
   display.display();
 }
 
+// Hàm hiển thị văn bản với cỡ chữ Size 2 (pixel chuẩn của Adafruit),
+// tự động ngắt dòng theo từng từ (word-wrap) và căn giữa đẹp mắt.
+// Trả về số dòng đã vẽ. Nếu câu quá dài (> 3 dòng hoặc có từ > 10 ký tự), trả về -1 để chuyển sang Size 1.
+int oled_print_size2_smart(const char* text) {
+  if (!text || !*text) return 0;
+
+  char lines[4][16];
+  int line_count = 0;
+  int cur_len = 0;
+  lines[0][0] = '\0';
+
+  const char* p = text;
+  while (*p && line_count < 4) {
+    while (*p == ' ') p++;
+    if (!*p) break;
+
+    char word[16];
+    int wi = 0;
+    while (*p && *p != ' ' && *p != '\n' && wi < (int)sizeof(word) - 1) {
+      word[wi++] = *p++;
+    }
+    word[wi] = '\0';
+
+    if (wi > 10) {
+      return -1; // Từ dài quá 10 ký tự, không vừa dòng Size 2 -> Chuyển sang Size 1
+    }
+
+    int needed = (cur_len == 0) ? wi : (1 + wi);
+    if (cur_len + needed <= 10) {
+      if (cur_len > 0) {
+        strcat(lines[line_count], " ");
+      }
+      strcat(lines[line_count], word);
+      cur_len += needed;
+    } else {
+      line_count++;
+      if (line_count >= 3) {
+        return -1; // Vượt quá 3 dòng Size 2 -> Chuyển sang Size 1
+      }
+      strcpy(lines[line_count], word);
+      cur_len = wi;
+    }
+  }
+
+  if (cur_len > 0) {
+    line_count++;
+  }
+
+  if (line_count > 3) {
+    return -1;
+  }
+
+  // Căn giữa theo chiều dọc tùy theo số lượng dòng
+  int start_y = 18;
+  int line_gap = 16;
+  if (line_count == 1) {
+    start_y = 31; // Căn chính giữa màn hình OLED
+  } else if (line_count == 2) {
+    start_y = 22;
+    line_gap = 18;
+  } else if (line_count == 3) {
+    start_y = 16;
+    line_gap = 16;
+  }
+
+  display.setTextSize(2);
+  for (int i = 0; i < line_count; i++) {
+    int line_len = strlen(lines[i]);
+    int line_w = line_len * 12 - 2;
+    int start_x = max(2, (128 - line_w) / 2);
+    display.setCursor(start_x, start_y + i * line_gap);
+    display.println(lines[i]);
+  }
+
+  return line_count;
+}
+
 void oled_show_transcript(const char* label, const char* text) {
   if (!oled_present) return;
 
@@ -184,17 +262,15 @@ void oled_show_transcript(const char* label, const char* text) {
   display.setTextColor(SSD1306_WHITE);
   display.setTextWrap(true);
 
-  int len = text ? strlen(text) : 0;
-  if (len <= 25) {
-    // CHỮ TO SIZE 2: Cực kỳ rõ ràng, dễ nhìn từ xa
-    display.setTextSize(2);
-    display.setCursor(0, 18);
-  } else {
-    // Chữ Size 1 cho câu dài hơn
+  // Thử hiển thị bằng font Size 2 chuẩn pixel (to rõ, vuông vức, ngắt từ thông minh, căn giữa)
+  int res = oled_print_size2_smart(text);
+
+  if (res < 0) {
+    // Với câu văn dài (> 3 dòng Size 2), tự động chuyển sang Size 1 để chứa trọn vẹn 5 dòng
     display.setTextSize(1);
-    display.setCursor(0, 16);
+    display.setCursor(2, 16);
+    display.println(text ? text : "");
   }
-  display.println(text ? text : "");
 
   display.display();
 }
@@ -382,9 +458,13 @@ static esp_err_t oled_post_handler(httpd_req_t *req) {
 
   // Phân loại nhãn hiển thị: MIC (Lời nói) hoặc SIGN (Ký hiệu)
   if (strncmp(buf, "MIC:", 4) == 0) {
-    oled_show_transcript("MICROPHONE -> CHU", buf + 4);
+    char* p = buf + 4;
+    while (*p == ' ') p++;
+    oled_show_transcript("MICROPHONE -> CHU", p);
   } else if (strncmp(buf, "SIGN:", 5) == 0) {
-    oled_show_transcript("KY HIEU -> LOA", buf + 5);
+    char* p = buf + 5;
+    while (*p == ' ') p++;
+    oled_show_transcript("KY HIEU -> LOA", p);
   } else {
     oled_show_transcript("THONG TIN", buf);
   }

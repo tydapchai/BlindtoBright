@@ -13,8 +13,8 @@ from pathlib import Path
 os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 warnings.filterwarnings("ignore")
 try:
-    sys.stdout.reconfigure(line_buffering=True)
-    sys.stderr.reconfigure(line_buffering=True)
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace", line_buffering=True)
 except Exception:
     pass
 
@@ -36,6 +36,7 @@ from camera import LatestFrameCamera
 from decoder import TemporalDecoder
 from gemini_api import GeminiClient
 from preprocess import build_tensor, extract_standard_landmarks, motion_energy, new_buffer
+from ctr_gcn_model import load_ctr_gcn_checkpoint, load_model_checkpoint
 from stgcn_model import load_stgcn_checkpoint
 
 # Tải font Arial với kích cỡ chuẩn cho canvas 960x720
@@ -263,11 +264,11 @@ def resolve_esp_ip(target_ip):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="BlindtoBright ST-GCN Transformer v1.1")
-    parser.add_argument("--checkpoint", default=str(ROOT_DIR / "models" / "best_vsl_model.pth"))
+    parser = argparse.ArgumentParser(description="BlindtoBright CSLR v1.1 (CTR-GCN / ST-GCN)")
+    parser.add_argument("--checkpoint", default=str(ROOT_DIR / "models" / "best_vsl_model_ctr_gcn.pth"))
     parser.add_argument(
         "--labels",
-        default=str(ROOT_DIR / "core_v1.1" / "label_map_472.json"),
+        default=str(ROOT_DIR / "core_v1.1" / "label_map_472_10w.json"),
     )
     parser.add_argument("--camera", default="0")
     parser.add_argument("--esp-ip", default=None)
@@ -280,6 +281,7 @@ def main():
     parser.add_argument("--frames", type=int, default=48, help="Số frame bắt cho mỗi cử chỉ (mặc định đúng 48 frame)")
     parser.add_argument("--motion-start", type=float, default=0.008, help="Ngưỡng vận động bắt đầu cử chỉ (mặc định 0.008)")
     parser.add_argument("--pause-on-start", action="store_true", help="Bắt đầu ở trạng thái tạm dừng thay vì tự động nhận diện")
+    parser.add_argument("--rotate-180", action="store_true", help="Xoay ngược khung hình camera 180 độ")
     args = parser.parse_args()
 
     # Cấu hình IP ESP32
@@ -290,7 +292,7 @@ def main():
         if ip_file.is_file():
             args.esp_ip = ip_file.read_text(encoding="utf-8").strip() or None
     if not args.esp_ip:
-        args.esp_ip = "10.245.192.219"
+        args.esp_ip = "192.168.100.176"
 
     # Kiểm tra IP và TỰ ĐỘNG FALLBACK về mạng của ESP (SoftAP 192.168.4.1) khi không vào được Wi-Fi
     should_resolve = (
@@ -317,14 +319,27 @@ def main():
     device = torch.device(device_name)
     checkpoint_path = resolve_path(args.checkpoint, Path(args.checkpoint))
     labels_path = resolve_path(args.labels, Path(args.labels))
-    model, checkpoint, num_classes = load_stgcn_checkpoint(checkpoint_path, device)
-    idx_to_class = read_labels(labels_path)
+    model, checkpoint, num_classes = load_model_checkpoint(checkpoint_path, device)
+
+    # Đọc nhãn: ưu tiên nhãn lưu kèm trong checkpoint (nếu có)
+    if "label_map" in checkpoint and isinstance(checkpoint["label_map"], dict) and len(checkpoint["label_map"]) == num_classes:
+        idx_to_class = {int(v): k for k, v in checkpoint["label_map"].items()}
+    else:
+        idx_to_class = read_labels(labels_path)
+
+    # Tự động khớp nhãn nếu file nhãn truyền vào không khớp với số classes mô hình
     if len(idx_to_class) != num_classes:
-        raise ValueError(f"Số nhãn ({len(idx_to_class)}) khác output model ({num_classes})")
+        if num_classes == 10 and (CURRENT_DIR / "label_map_472_10w.json").exists():
+            idx_to_class = read_labels(CURRENT_DIR / "label_map_472_10w.json")
+        elif (CURRENT_DIR / "label_map_472.json").exists() and len(read_labels(CURRENT_DIR / "label_map_472.json")) == num_classes:
+            idx_to_class = read_labels(CURRENT_DIR / "label_map_472.json")
+        else:
+            raise ValueError(f"Số nhãn ({len(idx_to_class)}) khác output model ({num_classes})")
 
     gemini = GeminiClient(api_keys=args.gemini_key)
+    model_name = "CTR-GCN" if "CTR" in type(model).__name__ else "ST-GCN Transformer"
 
-    print(f"[Model] ST-GCN Transformer | classes={num_classes} | device={device} | Ngưỡng tin cậy={args.conf}")
+    print(f"[Model] {model_name} | classes={num_classes} | device={device} | Ngưỡng tin cậy={args.conf}")
     if args.esp_ip:
         print(f"[ESP32] TTS/OLED endpoint: {args.esp_ip}")
     if "val_acc" in checkpoint:
@@ -353,17 +368,17 @@ def main():
             print("=" * 70 + "\n")
             source = 0
 
-    camera = LatestFrameCamera(source)
+    camera = LatestFrameCamera(source, rotate_180=args.rotate_180)
 
     # Kích thước Canvas chuẩn 960x720 để đảm bảo giao diện luôn rộng rãi, sắc nét và không bao giờ bị tràn chữ
     CANVAS_WIDTH = 960
     CANVAS_HEIGHT = 720
-    WINDOW_NAME = "BlindtoBright ST-GCN v1.1"
+    WINDOW_NAME = f"BlindtoBright {model_name} v1.1"
     cv2.namedWindow(WINDOW_NAME, cv2.WINDOW_NORMAL)
     cv2.resizeWindow(WINDOW_NAME, CANVAS_WIDTH, CANVAS_HEIGHT)
 
     splash = np.zeros((CANVAS_HEIGHT, CANVAS_WIDTH, 3), dtype=np.uint8)
-    cv2.putText(splash, "BlindtoBright ST-GCN v1.1", (100, 300),
+    cv2.putText(splash, f"BlindtoBright {model_name} v1.1", (100, 300),
                 cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 215, 255), 2)
     cv2.putText(splash, "Dang ket noi camera...", (100, 360),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.85, (255, 255, 255), 2)
@@ -495,7 +510,7 @@ def main():
                     continue
 
                 splash = np.zeros((CANVAS_HEIGHT, CANVAS_WIDTH, 3), dtype=np.uint8)
-                cv2.putText(splash, "BlindtoBright ST-GCN v1.1", (100, 300),
+                cv2.putText(splash, f"BlindtoBright {model_name} v1.1", (100, 300),
                             cv2.FONT_HERSHEY_SIMPLEX, 1.2, (0, 215, 255), 2)
                 cv2.putText(splash, "Dang ket noi camera...", (100, 360),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.85, (255, 255, 255), 2)
@@ -523,6 +538,7 @@ def main():
                 print("  • Phím [BACKSPACE]: XÓA TỪ CUỐI CÙNG (nếu nhận diện nhầm).")
                 print("  • Phím [C]:         XÓA TOÀN BỘ CÂU đang ghép để làm lại câu mới.")
                 print("  • Phím [SPACE]:     Bật / Tạm dừng nhận diện.")
+                print("  • Phím [R]:         Xoay ngược camera 180 độ.")
                 print("  • Phím [Q] / [ESC]: Thoát chương trình.")
                 print("=" * 70 + "\n")
 
@@ -599,6 +615,10 @@ def main():
                                 pass
                     else:
                         print("\n[System] >>> Câu đang trống.")
+
+                # [R]: Xoay ngược khung hình camera 180 độ
+                elif key in (ord("r"), ord("R")):
+                    camera.toggle_rotate()
 
                 # [SPACE]: Bật/Tắt nhận diện cử chỉ
                 elif key == 32:
