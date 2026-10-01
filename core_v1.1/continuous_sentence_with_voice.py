@@ -189,6 +189,10 @@ def draw_continuous_sentence_overlay(
     time_since_last_word,
     is_guard_phase,
     guard_remain,
+    is_recording_audio=False,
+    stt_status="",
+    stt_text="",
+    stt_working=False,
 ):
     """
     Giao diện VSL trực quan:
@@ -336,21 +340,37 @@ def draw_continuous_sentence_overlay(
         draw.text((left_x + 12, box_trans_y + 48), 'Ví dụ: ["tôi", "bóng chuyền", "đau"] ➔ "Tôi chơi bóng chuyền bị đau."', font=FONT_HINT, fill=(130, 160, 140))
         draw.text((left_x + 12, box_trans_y + 78), f'(Làm các từ liên tiếp. Dừng tay {sentence_idle:.1f}s để hệ thống tự động ngắt câu)', font=FONT_SMALL, fill=(100, 130, 110))
 
-    # --- HỘP 2C: ÂM THANH & TRẠNG THÁI ---
-    tts_status = "BẬT (Laptop Speaker)" if tts_enabled else "TẮT"
+    # --- HỘP 2C: ÂM THANH & TRẠNG THÁI (TTS + MIC STT) ---
+    tts_status_str = "BẬT (Laptop Speaker)" if tts_enabled else "TẮT"
     tts_color = (0, 255, 150) if tts_enabled else (160, 160, 160)
-    draw.text((left_x + 12, box_sub_y + 8), f"Giọng đọc TTS: {tts_status}", font=FONT_HINT, fill=tts_color)
-    draw.text((left_x + 12, box_sub_y + 32), "Phím tắt: [ENTER] Ngắt & Dịch ngay | [C] Xóa câu | [BACKSPACE] Xóa từ cuối", font=FONT_SMALL, fill=(200, 200, 200))
+    draw.text((left_x + 12, box_sub_y + 5), f"TTS: {tts_status_str}", font=FONT_HINT, fill=tts_color)
+
+    # Hiển thị trạng thái Mic/STT
+    if is_recording_audio:
+        mic_icon_color = (255, 60, 60)
+        draw.ellipse((left_x + 200, box_sub_y + 7, left_x + 212, box_sub_y + 19), fill=mic_icon_color)
+        draw.text((left_x + 218, box_sub_y + 5), "MIC ĐANG THU ÂM...", font=FONT_HINT, fill=(255, 100, 100))
+    elif stt_working:
+        draw.text((left_x + 200, box_sub_y + 5), "⏳ ĐANG NHẬN DẠNG GIỌNG NÓI...", font=FONT_HINT, fill=(255, 215, 0))
+    elif stt_status:
+        draw.text((left_x + 200, box_sub_y + 5), stt_status[:50], font=FONT_HINT, fill=(100, 220, 255))
+
+    # Hiển thị câu nghe được gần nhất (nếu có)
+    if stt_text and not is_recording_audio:
+        stt_display = f'🗣️ "{stt_text}"'
+        draw.text((left_x + 12, box_sub_y + 28), stt_display[:60], font=FONT_SMALL, fill=(180, 230, 255))
+    else:
+        draw.text((left_x + 12, box_sub_y + 28), "[M] Thu âm người nói | [ENTER] Ngắt & Dịch | [C] Xóa câu | [BACKSPACE] Xóa từ", font=FONT_SMALL, fill=(200, 200, 200))
 
     # --- BOTTOM GUIDE BAR ---
-    guide_str = "[ENTER] Ngắt & Dịch  |  [R] Xoay 180°  |  [C] Xóa câu  |  [BACKSPACE] Xóa từ  |  [T] TTS  |  [Q] Thoát"
+    guide_str = "[M] Thu âm  |  [ENTER] Dịch  |  [R] Xoay  |  [C] Xóa câu  |  [BACKSPACE] Xóa từ  |  [T] TTS  |  [Q] Thoát"
     draw.text((25, bot_y + 10), guide_str, font=FONT_HINT, fill=(220, 220, 220))
 
     display[:] = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Nhận diện cử chỉ VSL Auto-REC (Bản chuẩn debug) 25 frames & Ngắt câu tự động Gemini AI")
+    parser = argparse.ArgumentParser(description="BlindtoBright 2-Way: VSL Auto-REC 25f + Voice Recording (Mic ESP32/Laptop → Gemini STT → OLED)")
     parser.add_argument("--checkpoint", default=str(ROOT_DIR / "models" / "best_vsl_model_ctr_gcn.pth"))
     parser.add_argument("--labels", default=str(ROOT_DIR / "core_v1.1" / "label_map_472_10w.json"))
     parser.add_argument("--camera", default="esp", help="'0' (webcam laptop), 'esp' (camera ESP32), hoặc URL http")
@@ -369,6 +389,8 @@ def main():
     parser.add_argument("--start-idle", type=float, default=0.8, help="Thời gian tĩnh tay (giây) tối thiểu trước khi nhận câu mới (mặc định 0.8s)")
     parser.add_argument("--no-tts", action="store_true", help="Tắt tính năng phát âm thanh giọng đọc")
     parser.add_argument("--rotate-180", action="store_true", help="Xoay ngược khung hình camera 180 độ")
+    parser.add_argument("--mic-source", default="esp", choices=["esp", "laptop"], help="Nguồn micro: 'esp' (micro INMP441 ESP32 port 82) hoặc 'laptop' (micro laptop qua sounddevice)")
+    parser.add_argument("--mic-duration", type=float, default=5.0, help="Thời lượng tối đa mỗi lần ghi âm (giây, mặc định 5s)")
     args = parser.parse_args()
 
     # Khởi tạo mô hình
@@ -501,6 +523,100 @@ def main():
 
     send_oled_async("SIGN: SAN SANG...")
 
+    # ===========================================================================
+    # CHIỀU 2: LUỒNG GHI ÂM & NHẬN DẠNG GIỌNG NÓI (SPEECH-TO-TEXT)
+    # ===========================================================================
+    is_recording_audio = False
+    audio_buffer = bytearray()
+    stt_text = ""           # Câu nghe được gần nhất từ người nói
+    stt_status = ""         # Trạng thái hiển thị trên HUD ("ĐANG THU ÂM...", "ĐANG DỊCH...", v.v.)
+    stt_working = False     # True khi đang gọi Gemini STT
+    mic_start_time = 0.0    # Thời điểm bắt đầu ghi âm (cho auto-stop)
+
+    # HTTP session riêng cho mic streaming (tránh xung đột với session OLED/TTS)
+    mic_http_session = requests.Session()
+    mic_http_session.trust_env = False
+
+    # Luồng hút âm thanh liên tục từ Mic I2S ESP32 (Port 82)
+    def audio_fetch_worker_esp():
+        nonlocal audio_buffer, is_recording_audio
+        while True:
+            if is_recording_audio and actual_ip:
+                try:
+                    resp = mic_http_session.get(
+                        f"http://{actual_ip}:82/mic", stream=True, timeout=2.0
+                    )
+                    if resp.status_code == 200:
+                        for chunk in resp.iter_content(chunk_size=1024):
+                            if not is_recording_audio:
+                                break
+                            if chunk:
+                                audio_buffer.extend(chunk)
+                except Exception:
+                    time.sleep(0.5)
+            else:
+                time.sleep(0.1)
+
+    # Luồng ghi âm từ Mic Laptop (qua sounddevice) - dùng khi --mic-source=laptop
+    def audio_fetch_worker_laptop():
+        nonlocal audio_buffer, is_recording_audio
+        SAMPLE_RATE = 16000
+        CHUNK_DURATION = 0.25  # 250ms mỗi lần đọc
+        CHUNK_SAMPLES = int(SAMPLE_RATE * CHUNK_DURATION)
+        while True:
+            if is_recording_audio and AUDIO_AVAILABLE:
+                try:
+                    recording = sd.rec(
+                        CHUNK_SAMPLES, samplerate=SAMPLE_RATE, channels=1, dtype="int16"
+                    )
+                    sd.wait()
+                    if is_recording_audio:
+                        audio_buffer.extend(recording.tobytes())
+                except Exception:
+                    time.sleep(0.3)
+            else:
+                time.sleep(0.1)
+
+    # Khởi chạy worker phù hợp với nguồn micro
+    if args.mic_source == "laptop" and AUDIO_AVAILABLE:
+        mic_worker_thread = threading.Thread(target=audio_fetch_worker_laptop, daemon=True)
+        mic_source_label = "Laptop Microphone (sounddevice)"
+    else:
+        mic_worker_thread = threading.Thread(target=audio_fetch_worker_esp, daemon=True)
+        mic_source_label = f"ESP32 INMP441 (http://{actual_ip}:82/mic)"
+    mic_worker_thread.start()
+    print(f"[Mic] Luồng thu âm sẵn sàng: {mic_source_label}")
+
+    # Hàm xử lý transcribe âm thanh chạy nền (gọi Gemini STT)
+    def transcribe_audio_job(pcm_bytes):
+        nonlocal stt_text, stt_status, stt_working
+        if len(pcm_bytes) < 4000:
+            stt_status = "Không nghe gì (âm thanh quá ngắn)"
+            stt_working = False
+            return
+        stt_working = True
+        stt_status = "ĐANG NHẬN DẠNG GIỌNG NÓI..."
+        t0 = time.time()
+        try:
+            text = gemini_client.transcribe_audio(pcm_bytes)
+            dt = time.time() - t0
+            if text:
+                stt_text = text
+                stt_status = f'NGƯỜI NÓI ({dt:.1f}s): "{text}"'
+                print(f'\n[STT] ✅ Nhận dạng thành công ({dt:.2f}s): "{text}"')
+
+                # Gửi lên OLED ESP32 cho người khiếm thính đọc
+                clean_ascii = remove_vietnamese_accents(text)
+                send_oled_async(f"MIC: {clean_ascii}")
+            else:
+                stt_status = "Không nghe rõ (Gemini không trả text)"
+                print(f"[STT] ⚠️ Gemini không trả về text.")
+        except Exception as e:
+            stt_status = f"Lỗi STT: {e}"
+            print(f"[STT] ❌ Lỗi: {e}")
+        finally:
+            stt_working = False
+
     # Quản lý thuật toán thu từ Auto-REC (Khớp 100% logic bản debug_word.py)
     is_recording = False
     gesture_frames = []
@@ -576,7 +692,7 @@ def main():
     worker_thread.start()
 
     print("\n" + "=" * 75)
-    print("  [BLINDTOBRIGHT - AUTO-REC BẢN CHUẨN DEBUG 25 FRAMES & NGẮT CÂU AI]")
+    print("  [BLINDTOBRIGHT 2-WAY: SIGN→SPEECH + VOICE→TEXT (FULL DUPLEX)]")
     print(f"  - Checkpoint           : {checkpoint_path.name}")
     print(f"  - Cửa sổ phân đoạn     : window_size = {window_size} frames (Chuẩn 25 frames)")
     print(f"  - Thuật toán thu từ    : Auto-REC giống 100% debug_word.py")
@@ -587,7 +703,10 @@ def main():
     print(f"  - Tự động ngắt câu sau : {args.sentence_idle:.1f}s dừng tay (hoặc bấm [ENTER])")
     print(f"  - Giọng đọc (TTS)      : {'BẬT' if tts_enabled else 'TẮT'}")
     print(f"  - Màn hình ESP32 OLED  : http://{actual_ip}/oled")
+    print(f"  - Nguồn Micro (STT)   : {mic_source_label}")
+    print(f"  - Ghi âm tối đa       : {args.mic_duration:.0f}s mỗi lần")
     print("  - Phím tắt:")
+    print("    * [M]        : Bật/Tắt ghi âm người nói (STT → OLED)")
     print("    * [ENTER]    : Ngắt câu và dịch ngay lập tức")
     print("    * [BACKSPACE]: Xóa từ cuối cùng (nếu nhận nhầm)")
     print("    * [C]        : Xóa sạch câu cũ để bắt đầu câu mới")
@@ -659,6 +778,23 @@ def main():
                     tts_enabled = not tts_enabled
                     print(f"\n[TTS] Đã {'BẬT' if tts_enabled else 'TẮT'} giọng đọc âm thanh.")
 
+                # [M]: Bật/Tắt ghi âm giọng nói người đối diện (Speech-to-Text)
+                elif key in (ord("m"), ord("M")):
+                    is_recording_audio = not is_recording_audio
+                    if is_recording_audio:
+                        audio_buffer = bytearray()
+                        stt_status = f"🎙️ ĐANG THU ÂM... (bấm [M] để dừng, tối đa {args.mic_duration:.0f}s)"
+                        print(f"\n[Mic] 🎙️ BẮT ĐẦU GHI ÂM từ {mic_source_label}")
+                        mic_start_time = time.time()
+                    else:
+                        stt_status = "⏳ ĐANG GỬI ÂM THANH CHO GEMINI AI NHẬN DẠNG..."
+                        print(f"[Mic] ⏹️ DỪNG GHI ÂM. Đã thu {len(audio_buffer)} bytes. Đang transcribe...")
+                        threading.Thread(
+                            target=transcribe_audio_job,
+                            args=(bytes(audio_buffer),),
+                            daemon=True,
+                        ).start()
+
                 # [R]: Xoay ngược khung hình camera 180 độ
                 elif key in (ord("r"), ord("R")):
                     camera.toggle_rotate()
@@ -666,6 +802,17 @@ def main():
                 # [Q] hoặc [ESC]: Thoát
                 elif key in (ord("q"), ord("Q"), 27):
                     break
+
+            # Auto-stop ghi âm sau mic_duration giây
+            if is_recording_audio and (time.time() - mic_start_time) >= args.mic_duration:
+                is_recording_audio = False
+                stt_status = "⏳ HẾT THỜI GIAN GHI ÂM. ĐANG NHẬN DẠNG..."
+                print(f"[Mic] ⏹️ Tự động dừng ghi âm sau {args.mic_duration:.0f}s. Đã thu {len(audio_buffer)} bytes.")
+                threading.Thread(
+                    target=transcribe_audio_job,
+                    args=(bytes(audio_buffer),),
+                    daemon=True,
+                ).start()
 
             if is_new:
                 rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -835,6 +982,10 @@ def main():
                     time_since_last_word=time_since_last_word,
                     is_guard_phase=is_guard_phase,
                     guard_remain=guard_remain,
+                    is_recording_audio=is_recording_audio,
+                    stt_status=stt_status,
+                    stt_text=stt_text,
+                    stt_working=stt_working,
                 )
 
                 cv2.imshow(WINDOW_NAME, display)

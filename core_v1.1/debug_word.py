@@ -269,9 +269,9 @@ def draw_debug_overlay(
 
     # Bottom Guide Bar
     if mode == "continuous":
-        guide_str = "[M] Đổi chế độ  |  [C] Xóa chuỗi từ  |  [BACKSPACE] Xóa từ cuối  |  [Q] Thoát"
+        guide_str = "[M] Đổi chế độ  |  [R] Xoay 180°  |  [C] Xóa chuỗi từ  |  [BACKSPACE] Xóa từ cuối  |  [Q] Thoát"
     else:
-        guide_str = "[SPACE] Bắt đầu / Dừng thu & Phân tích  |  [M] Đổi chế độ  |  [C] Xóa kết quả  |  [Q] Thoát"
+        guide_str = "[SPACE] Bắt đầu / Dừng thu  |  [M] Đổi chế độ  |  [R] Xoay 180°  |  [C] Xóa kết quả  |  [Q] Thoát"
     draw.text((25, bot_y + 10), guide_str, font=FONT_HINT, fill=(220, 220, 220))
 
     display[:] = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
@@ -328,6 +328,7 @@ def main():
     parser.add_argument("--cooldown", type=int, default=5, help="Số bước giãn cách để tránh lặp từ vừa nhận diện (mặc định 5)")
     parser.add_argument("--list", action="store_true", help="In ra danh sách nhãn từ vựng rồi thoát")
     parser.add_argument("--search", default=None, help="Tìm kiếm nhãn theo từ khóa rồi thoát")
+    parser.add_argument("--rotate-180", action="store_true", help="Xoay ngược khung hình camera 180 độ")
     args = parser.parse_args()
 
     # Khởi tạo mô hình trước để biết chính xác số lượng classes
@@ -387,7 +388,7 @@ def main():
         target_ip = args.esp_ip
         if not target_ip and ip_file.is_file():
             target_ip = ip_file.read_text(encoding="utf-8").strip() or None
-        target_ip = target_ip or "10.245.192.219"
+        target_ip = target_ip or "192.168.100.176"
         actual_ip = resolve_esp_ip(target_ip)
         try:
             ip_file.parent.mkdir(parents=True, exist_ok=True)
@@ -424,7 +425,7 @@ def main():
             print("=" * 70 + "\n")
             source = 0
 
-    camera = LatestFrameCamera(source)
+    camera = LatestFrameCamera(source, rotate_180=args.rotate_180)
 
     print("[System] Đang khởi tạo MediaPipe Holistic...")
     detector = mp.solutions.holistic.Holistic(
@@ -569,6 +570,10 @@ def main():
                     last_top5 = []
                     last_target_info = None
                     print("\n[Action] Đã xóa toàn bộ chuỗi từ và kết quả phân tích cũ.")
+
+                # [R]: Xoay ngược khung hình camera 180 độ
+                elif key in (ord("r"), ord("R")):
+                    camera.toggle_rotate()
 
                 # [BACKSPACE] hoặc [DEL]: Xóa từ cuối cùng vừa nhận diện
                 elif key in (8, 127):

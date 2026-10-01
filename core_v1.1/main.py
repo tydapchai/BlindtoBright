@@ -281,6 +281,7 @@ def main():
     parser.add_argument("--frames", type=int, default=48, help="Số frame bắt cho mỗi cử chỉ (mặc định đúng 48 frame)")
     parser.add_argument("--motion-start", type=float, default=0.008, help="Ngưỡng vận động bắt đầu cử chỉ (mặc định 0.008)")
     parser.add_argument("--pause-on-start", action="store_true", help="Bắt đầu ở trạng thái tạm dừng thay vì tự động nhận diện")
+    parser.add_argument("--rotate-180", action="store_true", help="Xoay ngược khung hình camera 180 độ")
     args = parser.parse_args()
 
     # Cấu hình IP ESP32
@@ -291,7 +292,7 @@ def main():
         if ip_file.is_file():
             args.esp_ip = ip_file.read_text(encoding="utf-8").strip() or None
     if not args.esp_ip:
-        args.esp_ip = "10.245.192.219"
+        args.esp_ip = "192.168.100.176"
 
     # Kiểm tra IP và TỰ ĐỘNG FALLBACK về mạng của ESP (SoftAP 192.168.4.1) khi không vào được Wi-Fi
     should_resolve = (
@@ -367,7 +368,7 @@ def main():
             print("=" * 70 + "\n")
             source = 0
 
-    camera = LatestFrameCamera(source)
+    camera = LatestFrameCamera(source, rotate_180=args.rotate_180)
 
     # Kích thước Canvas chuẩn 960x720 để đảm bảo giao diện luôn rộng rãi, sắc nét và không bao giờ bị tràn chữ
     CANVAS_WIDTH = 960
@@ -537,6 +538,7 @@ def main():
                 print("  • Phím [BACKSPACE]: XÓA TỪ CUỐI CÙNG (nếu nhận diện nhầm).")
                 print("  • Phím [C]:         XÓA TOÀN BỘ CÂU đang ghép để làm lại câu mới.")
                 print("  • Phím [SPACE]:     Bật / Tạm dừng nhận diện.")
+                print("  • Phím [R]:         Xoay ngược camera 180 độ.")
                 print("  • Phím [Q] / [ESC]: Thoát chương trình.")
                 print("=" * 70 + "\n")
 
@@ -613,6 +615,10 @@ def main():
                                 pass
                     else:
                         print("\n[System] >>> Câu đang trống.")
+
+                # [R]: Xoay ngược khung hình camera 180 độ
+                elif key in (ord("r"), ord("R")):
+                    camera.toggle_rotate()
 
                 # [SPACE]: Bật/Tắt nhận diện cử chỉ
                 elif key == 32:
