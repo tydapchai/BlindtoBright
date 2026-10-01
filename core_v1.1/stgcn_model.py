@@ -55,8 +55,13 @@ class STGCNTransformer(nn.Module):
 
 def load_stgcn_checkpoint(checkpoint_path, device):
     checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
+    raw_sd = checkpoint.get("model_state_dict", checkpoint)
+    if any("ctr_gcn" in k for k in raw_sd.keys()):
+        from ctr_gcn_model import load_ctr_gcn_checkpoint
+        return load_ctr_gcn_checkpoint(checkpoint_path, device)
+
     state_dict = {
-        key: value for key, value in checkpoint["model_state_dict"].items()
+        key: value for key, value in raw_sd.items()
         if key not in {"total_ops", "total_params"}
         and not key.endswith((".total_ops", ".total_params"))
     }
@@ -65,3 +70,8 @@ def load_stgcn_checkpoint(checkpoint_path, device):
     model.load_state_dict(state_dict, strict=True)
     model.to(device).eval()
     return model, checkpoint, num_classes
+
+
+def load_model_checkpoint(checkpoint_path, device):
+    from ctr_gcn_model import load_model_checkpoint as _loader
+    return _loader(checkpoint_path, device)

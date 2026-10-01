@@ -1,43 +1,61 @@
-# BlindtoBright ST-GCN Transformer v1.1
+# BlindtoBright Core v1.1 (CTR-GCN / ST-GCN)
 
-Ban nay chay checkpoint ST-GCN Transformer voi input 9 kenh, 48 frame va 76 node.
-Ban goc trong `core/` khong bi thay doi.
+Phiên bản này hỗ trợ chạy mô hình **CTR-GCN** (đồ thị động kênh tương quan) và **ST-GCN Transformer** với input 9 kênh (tọa độ, vận tốc, gia tốc), 48 frames và 76 landmarks (33 pose + 21 tay trái + 21 tay phải + 1 cổ). Bản gốc trong `core/` không bị thay đổi.
 
-## Chay
+Checkpoint mặc định: `BlindtoBright/models/best_vsl_model_ctr_gcn.pth` đi kèm `BlindtoBright/core_v1.1/label_map_472_10w.json`.
 
-Tu thu muc workspace:
+---
 
+## 1. Chạy chương trình chính (Nhận diện & Ghép câu)
+
+Từ thư mục workspace:
+
+- **Chạy với Webcam laptop:**
 ```powershell
 python BlindtoBright/core_v1.1/main.py --camera 0
 ```
 
-Voi camera ESP32, LLM va TTS qua loa ESP32:
-
+- **Chạy với Camera ESP32, LLM dịch câu và TTS qua loa ESP32:**
 ```powershell
-python BlindtoBright/core_v1.1/main.py --camera http://ESP_IP:81/stream --esp-ip ESP_IP
+python BlindtoBright/core_v1.1/main.py --camera esp --esp-ip 10.245.192.219
 ```
 
-Khi decoder ket thuc mot cau, chuoi gloss duoc gui qua Gemini LLM de sap xep lai thanh cau tieng Viet, sau do Gemini TTS tao PCM va gui toi `http://ESP_IP/play`. Dung `--no-tts` neu chi muon xem ket qua tren man hinh.
-
-Nhan `SPACE` de bat/tat nhan dien va `Q` de thoat. `--stride 4` chay inference moi 4 frame; giam xuong `1` neu may du manh, tang len neu CPU qua tai.
-
-## Kiem tra model va cong cu ho tro
-
-- **Kiem tra luong frame camera ESP32 (FPS, bang thong, do tre, chup anh):**
+- **Chạy với checkpoint ST-GCN cũ (nếu muốn):**
 ```powershell
-python core_v1.1/test_esp_frame.py
-# Hoac chi dinh ro IP:
-python core_v1.1/test_esp_frame.py --ip 192.168.1.50
+python BlindtoBright/core_v1.1/main.py --checkpoint BlindtoBright/models/best_vsl_model.pth --labels BlindtoBright/core_v1.1/label_map_472_10w.json
 ```
 
-- **Kiem tra do chinh xac tung tu (Debug Word):**
+Khi gom đủ 48 frame, mô hình dự đoán từ vựng. Người dùng bấm `[ENTER]` để chốt câu gửi qua Gemini LLM sắp xếp lại thành câu tiếng Việt tự nhiên và phát loa qua ESP32.
+
+Các phím tắt điều khiển:
+- `SPACE`: Bật / Tạm dừng nhận diện.
+- `ENTER`: Chốt câu và gửi LLM dịch + phát âm thanh.
+- `BACKSPACE`: Xóa từ cuối cùng vừa nhận diện nếu bị sai.
+- `C`: Xóa toàn bộ câu đang ghép.
+- `Q` / `ESC`: Thoát chương trình.
+
+---
+
+## 2. Kiểm tra model và công cụ hỗ trợ
+
+- **Kiểm tra checkpoint model (Forward pass tensor (1, 9, 48, 76)):**
 ```powershell
-python core_v1.1/debug_word.py --camera esp
+python BlindtoBright/core_v1.1/verify_model.py
 ```
 
-- **Kiem tra checkpoint model:**
+- **Kiểm tra độ chính xác từng từ (Debug Word):**
 ```powershell
-python core_v1.1/verify_model.py
+python BlindtoBright/core_v1.1/debug_word.py --camera 0
+# Hoac liet ke danh sach nhan:
+python BlindtoBright/core_v1.1/debug_word.py --list
 ```
 
-Checkpoint mac dinh la `models/best_vsl_model.pth`. File nhan mac dinh duoc doc tu `VSL_pipeline/modules/label_map_472.json` hoac `core_v1.1/label_map_472.json`.
+- **Nhận diện cử chỉ liên tục (Continuous Word Spotting):**
+```powershell
+python BlindtoBright/core_v1.1/continuous_sentence.py --camera 0
+```
+
+- **Kiểm tra luồng frame camera ESP32 (FPS, băng thông, độ trễ):**
+```powershell
+python BlindtoBright/core_v1.1/test_esp_frame.py
+```

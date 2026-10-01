@@ -703,7 +703,7 @@ def main():
             ip_file = Path(__file__).resolve().parent.parent / "configs" / "esp_ip.txt"
             if ip_file.is_file():
                 target_ip = ip_file.read_text(encoding="utf-8").strip() or None
-        target_ip = target_ip or "10.245.192.219"
+        target_ip = target_ip or "192.168.100.176"
         actual_ip = resolve_esp_ip(target_ip)
 
         test_session = requests.Session()

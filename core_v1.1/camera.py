@@ -7,8 +7,9 @@ import requests
 
 
 class LatestFrameCamera:
-    def __init__(self, source):
+    def __init__(self, source, rotate_180=False):
         self.source = source
+        self.rotate_180 = rotate_180
         self.frame = None
         self.frame_id = 0
         self.lock = threading.Lock()
@@ -18,6 +19,11 @@ class LatestFrameCamera:
         self.session.trust_env = False
         self.thread = threading.Thread(target=self._capture, name="camera-capture", daemon=True)
         self.thread.start()
+
+    def toggle_rotate(self):
+        self.rotate_180 = not self.rotate_180
+        print(f"[Camera] Chế độ xoay 180 độ: {'BẬT' if self.rotate_180 else 'TẮT'}")
+        return self.rotate_180
 
     def _capture(self):
         if isinstance(self.source, str) and self.source.startswith("http"):
@@ -54,6 +60,8 @@ class LatestFrameCamera:
                                         cv2.IMREAD_COLOR,
                                     )
                                     if image is not None:
+                                        if self.rotate_180:
+                                            image = cv2.rotate(image, cv2.ROTATE_180)
                                         with self.lock:
                                             self.frame = image
                                             self.frame_id += 1
@@ -82,6 +90,8 @@ class LatestFrameCamera:
         while not self.stop_event.is_set():
             ok, image = capture.read()
             if ok and image is not None:
+                if self.rotate_180:
+                    image = cv2.rotate(image, cv2.ROTATE_180)
                 self.connected_event.set()
                 with self.lock:
                     self.frame = image
@@ -96,6 +106,12 @@ class LatestFrameCamera:
 
     def is_connected(self):
         return self.connected_event.is_set()
+
+    def read(self):
+        with self.lock:
+            if self.frame is None:
+                return None, False
+            return self.frame.copy(), True
 
     def read_latest(self, last_id):
         with self.lock:
