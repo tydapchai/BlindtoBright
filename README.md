@@ -33,6 +33,7 @@
 - [10. Cấu Trúc Thư Mục](#10-cấu-trúc-thư-mục)
 - [11. Kiến Trúc Mô Hình AI](#11-kiến-trúc-mô-hình-ai)
 - [12. Xử Lý Sự Cố (Troubleshooting)](#12-xử-lý-sự-cố-troubleshooting)
+- [13. Video Demo](#13-video-demo)
 
 ---
 
@@ -112,7 +113,19 @@
 | 6 | Dây nối Dupont | Female-Female | ~15 sợi | Nối các module |
 | 7 | Nguồn cấp | USB-C hoặc Pin 5V | 1 | Cấp nguồn cho ESP32 |
 
-### 3.2. Sơ Đồ Đấu Nối GPIO
+### 3.2. Hình Ảnh Phần Cứng Thực Tế
+
+<p align="center">
+  <img src="docs/hardware_top_view.jpg" alt="Phần cứng BlindToBright - Góc trên" width="600"/>
+</p>
+<p align="center"><i>Hình 1: Mạch phần cứng BlindToBright nhìn từ trên — ESP32-S3-CAM (phải), Micro INMP441 (giữa dưới), MAX98357A + Loa (trái trên), OLED SSD1306 (góc phải)</i></p>
+
+<p align="center">
+  <img src="docs/hardware_front_view.jpg" alt="Phần cứng BlindToBright - Góc trước" width="600"/>
+</p>
+<p align="center"><i>Hình 2: Mạch phần cứng BlindToBright nhìn từ phía trước — Toàn bộ hệ thống đấu nối trên breadboard</i></p>
+
+### 3.3. Sơ Đồ Đấu Nối GPIO
 
 #### Micro INMP441 → ESP32-S3
 
@@ -606,6 +619,27 @@ ValueError: Số nhãn (472) khác output model (10)
 
 ---
 
+## 13. Video Demo
+
+### 🎬 Demo Giao Tiếp 2 Chiều BlindToBright
+
+<p align="center">
+  <a href="https://drive.google.com/file/d/1WQKU4bOfFcKr3wOssUS4z6yOaNr_G5ZG/view?usp=sharing">
+    <img src="docs/blindtobright_logo.png" alt="▶ Xem Video Demo BlindToBright" width="500"/>
+  </a>
+</p>
+
+<p align="center">
+  <b>▶ <a href="https://drive.google.com/file/d/1WQKU4bOfFcKr3wOssUS4z6yOaNr_G5ZG/view?usp=sharing">BẤM VÀO ĐÂY ĐỂ XEM VIDEO DEMO</a></b>
+</p>
+
+<p align="center"><i>Video demo toàn bộ hệ thống BlindToBright hoạt động giao tiếp 2 chiều thời gian thực:<br/>
+Người khiếm thính làm cử chỉ tay → AI nhận diện & ghép câu → Loa phát giọng nói<br/>
+Người bình thường nói vào micro → AI nhận dạng giọng nói → OLED hiện chữ</i></p>
+
+---
+
 <p align="center">
   <b>BlindToBright</b> — Xóa nhòa rào cản giao tiếp, kết nối mọi trái tim 💛
 </p>
+
