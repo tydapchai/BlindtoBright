@@ -625,12 +625,12 @@ ValueError: Số nhãn (472) khác output model (10)
 
 <p align="center">
   <a href="https://drive.google.com/file/d/1WQKU4bOfFcKr3wOssUS4z6yOaNr_G5ZG/view?usp=sharing">
-    <img src="docs/blindtobright_logo.png" alt="▶ Xem Video Demo BlindToBright" width="500"/>
+    <img src="docs/demo_thumbnail.png" alt="▶ Xem Video Demo BlindToBright" width="750"/>
   </a>
 </p>
 
 <p align="center">
-  <b>▶ <a href="https://drive.google.com/file/d/1WQKU4bOfFcKr3wOssUS4z6yOaNr_G5ZG/view?usp=sharing">BẤM VÀO ĐÂY ĐỂ XEM VIDEO DEMO</a></b>
+  <b>▶ <a href="https://drive.google.com/file/d/1WQKU4bOfFcKr3wOssUS4z6yOaNr_G5ZG/view?usp=sharing">BẤM VÀO ĐÂY ĐỂ XEM VIDEO DEMO TOÀN DIỆN (Google Drive)</a></b>
 </p>
 
 <p align="center"><i>Video demo toàn bộ hệ thống BlindToBright hoạt động giao tiếp 2 chiều thời gian thực:<br/>
